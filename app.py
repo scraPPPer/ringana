@@ -7,6 +7,12 @@ from datetime import datetime
 # --- 1. SEITEN-KONFIGURATION ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
+# --- HILFSFUNKTION FÜR EURO-FORMATIERUNG ---
+def format_euro(val):
+    if pd.isna(val): return "0,00 €"
+    # Formatiert Zahl zu: 1.234,56 €
+    return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
+
 # --- CUSTOM CSS ---
 st.markdown("""
     <style>
@@ -51,27 +57,16 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 4. KORRIGIERTE LOGIK (ROLLIERENDER TREND & FORECAST) ---
+# --- 4. LOGIK (ROLLIERENDER TREND & FORECAST) ---
 def calculate_all_forecasts(df_historical):
     df = df_historical.sort_values('Monat').copy()
-    
-    # 1. Vorjahreswerte
     df['prev_year_amount'] = df['Betrag'].shift(12)
-    
-    # 2. Punktuelles YoY Wachstum
     df['yoy_growth'] = (df['Betrag'] / df['prev_year_amount']) - 1
-    
-    # 3. Rollierender Trend (Ø der jeweils letzten 6 verfügbaren Wachstumsraten)
-    # .rolling(6).mean() sorgt dafür, dass für jeden Monat nur die 6 Vormonate zählen
     df['rolling_trend'] = df['yoy_growth'].shift(1).rolling(window=6, min_periods=1).mean()
-    
-    # 4. Historische Prognose (Soll-Fläche) basierend auf dem DAMALS gültigen Trend
     df['hist_forecast'] = df['prev_year_amount'] * (1 + df['rolling_trend'])
     
-    # 5. Aktueller Trend-Faktor für die Zukunft (Heutiger Stand)
     current_trend = df['yoy_growth'].dropna().tail(6).mean() if not df['yoy_growth'].dropna().empty else 0
     
-    # 6. Zukunft 12 Monate
     last_row = df.iloc[-1]
     last_date, last_amount = last_row['Monat'], last_row['Betrag']
     future_list = [{'Monat': last_date, 'Betrag': last_amount}]
@@ -80,11 +75,7 @@ def calculate_all_forecasts(df_historical):
         f_month = last_date + pd.DateOffset(months=i)
         target_prev_year = f_month - pd.DateOffset(years=1)
         hist_row = df[df['Monat'] == target_prev_year]
-        
-        if not hist_row.empty:
-            f_amount = hist_row['Betrag'].values[0] * (1 + current_trend)
-        else:
-            f_amount = df['Betrag'].tail(6).mean()
+        f_amount = hist_row['Betrag'].values[0] * (1 + current_trend) if not hist_row.empty else df['Betrag'].tail(6).mean()
         future_list.append({'Monat': f_month, 'Betrag': f_amount})
     
     return df, pd.DataFrame(future_list), current_trend
@@ -106,41 +97,50 @@ try:
     if not df_raw.empty:
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{df_raw["Betrag"].iloc[-1]:,.2f} €</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(df_raw["Betrag"].iloc[-1])}</div></div>', unsafe_allow_html=True)
             st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend*100:+.1f} %</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{df_future["Betrag"].iloc[1]:,.2f} €</div></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Ø Letzte 12 Monate</div><div class="kachel-wert">{df_raw["Betrag"].tail(12).mean():,.2f} €</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{format_euro(df_future["Betrag"].iloc[1])}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Ø Letzte 12 Monate</div><div class="kachel-wert">{format_euro(df_raw["Betrag"].tail(12).mean())}</div></div>', unsafe_allow_html=True)
 
+        # --- CHART ---
         fig = go.Figure()
 
-        # 1. Historische Prognose (Soll-Fläche) - jetzt zeitlich korrekt rollierend!
-        # Wir filtern NaNs raus, damit die Fläche sauber beginnt
+        # Konfiguration für europäisches Zahlenformat im Hover
+        # d3-format: , für Tausender (wird via separators zu Punkt) und .2f für Dezimal
+        hover_template = '%{x|%b %Y}<br>Betrag: %{y:,.2f} €<extra></extra>'
+
+        # 1. Historische Prognose (Fläche)
         df_plot_hist = df_raw.dropna(subset=['hist_forecast'])
         fig.add_trace(go.Scatter(
             x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'],
             fill='tozeroy', mode='none', name='Prognose-Basis',
-            fillcolor='rgba(169, 169, 169, 0.2)'
+            fillcolor='rgba(169, 169, 169, 0.2)',
+            hovertemplate=hover_template
         ))
 
         # 2. Ist-Daten (Grün)
         fig.add_trace(go.Scatter(
             x=df_raw['Monat'], y=df_raw['Betrag'],
             mode='lines+markers', name='Ist',
-            line=dict(color='#2e7d32', width=3), marker=dict(size=8)
+            line=dict(color='#2e7d32', width=3), marker=dict(size=8),
+            hovertemplate=hover_template
         ))
 
         # 3. Zukünftiger Forecast (Graue Linie)
         fig.add_trace(go.Scatter(
             x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
-            line=dict(color='#A9A9A9', width=3), marker=dict(size=8)
+            line=dict(color='#A9A9A9', width=3), marker=dict(size=8),
+            hovertemplate=hover_template
         ))
 
         fig.update_layout(
             margin=dict(l=10, r=10, t=10, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            hovermode="x unified", yaxis=dict(title="€")
+            hovermode="x unified",
+            yaxis=dict(title="€", tickformat=",.", separators=".,"), # Setzt Punkt als Tausender und Komma als Dezimal
+            xaxis=dict(tickformat="%b %Y")
         )
         st.plotly_chart(fig, use_container_width=True)
 
