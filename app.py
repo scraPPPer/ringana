@@ -10,10 +10,7 @@ st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 # --- CUSTOM CSS FÜR KACHELN & STYLING ---
 st.markdown("""
     <style>
-    /* Überschrift kleiner machen */
-    h1 {
-        font-size: 1.8rem !important;
-    }
+    h1 { font-size: 1.8rem !important; }
     .kachel-container {
         background-color: #f0f2f6;
         border-radius: 10px;
@@ -22,24 +19,11 @@ st.markdown("""
         margin-bottom: 10px;
         border: 1px solid #e6e9ef;
     }
-    .kachel-titel {
-        font-size: 0.9rem;
-        color: #5f6368;
-        margin-bottom: 5px;
-    }
-    .kachel-wert {
-        font-size: 1.4rem;
-        font-weight: bold;
-        color: #2e7d32; /* Sattes Grün für die Werte */
-    }
+    .kachel-titel { font-size: 0.9rem; color: #5f6368; margin-bottom: 5px; }
+    .kachel-wert { font-size: 1.4rem; font-weight: bold; color: #2e7d32; }
     .stButton>button { 
-        width: 100%; 
-        border-radius: 5px; 
-        height: 3em; 
-        background-color: #2e7d32; /* Sattes Grün für den Button */
-        color: white; 
-        font-weight: bold;
-        border: none;
+        width: 100%; border-radius: 5px; height: 3em; 
+        background-color: #2e7d32; color: white; font-weight: bold; border: none;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -52,7 +36,7 @@ def init_connection():
         key = st.secrets["supabase_key"]
         return create_client(url, key)
     except Exception as e:
-        st.error("Verbindung zu Supabase fehlgeschlagen.")
+        st.error("Verbindung fehlgeschlagen.")
         st.stop()
 
 supabase = init_connection()
@@ -67,112 +51,89 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 4. EXCEL-LOGIK FÜR TREND & FORECAST ---
-def calculate_forecast(df_historical):
+# --- 4. ERWEITERTE LOGIK (HISTORISCHER & ZUKÜNFTIGER FORECAST) ---
+def calculate_all_forecasts(df_historical):
     df = df_historical.sort_values('Monat').copy()
     df['prev_year_amount'] = df['Betrag'].shift(12)
     df['yoy_growth'] = (df['Betrag'] / df['prev_year_amount']) - 1
     
     growth_rates = df['yoy_growth'].dropna()
-    if len(growth_rates) >= 6:
-        trend_factor = growth_rates.tail(6).mean()
-    else:
-        trend_factor = growth_rates.mean() if not growth_rates.empty else 0
+    trend_factor = growth_rates.tail(6).mean() if len(growth_rates) >= 6 else (growth_rates.mean() if not growth_rates.empty else 0)
     
+    # Historische Prognose berechnen (Soll-Fläche)
+    # Für jeden Punkt, zu dem es ein Vorjahr gibt: Vorjahr * (1 + aktueller Trend)
+    df['hist_forecast'] = df['prev_year_amount'] * (1 + trend_factor)
+    
+    # Zukünftiger Forecast (wie bisher)
     last_row = df.iloc[-1]
-    last_date = last_row['Monat']
-    last_amount = last_row['Betrag']
-    
-    # Startpunkt für die Verbindung der Linien
-    forecast_list = [{'Monat': last_date, 'Betrag': last_amount}]
+    last_date, last_amount = last_row['Monat'], last_row['Betrag']
+    future_list = [{'Monat': last_date, 'Betrag': last_amount}]
     
     for i in range(1, 13):
-        forecast_month = last_date + pd.DateOffset(months=i)
-        target_prev_year = forecast_month - pd.DateOffset(years=1)
+        f_month = last_date + pd.DateOffset(months=i)
+        target_prev_year = f_month - pd.DateOffset(years=1)
         hist_row = df[df['Monat'] == target_prev_year]
-        if not hist_row.empty:
-            forecast_amount = hist_row['Betrag'].values[0] * (1 + trend_factor)
-        else:
-            forecast_amount = df['Betrag'].tail(6).mean()
-            
-        forecast_list.append({'Monat': forecast_month, 'Betrag': forecast_amount})
+        f_amount = hist_row['Betrag'].values[0] * (1 + trend_factor) if not hist_row.empty else df['Betrag'].tail(6).mean()
+        future_list.append({'Monat': f_month, 'Betrag': f_amount})
     
-    return pd.DataFrame(forecast_list), trend_factor
+    return df, pd.DataFrame(future_list), trend_factor
 
 # --- 5. HAUPT-APP ---
-st.title("Provisions-Dashboard") # Icon entfernt, Überschrift durch CSS kleiner
+st.title("Provisions-Dashboard")
 
-# --- ERFASSUNGS-BEREICH ---
 with st.expander("➕ Neue Daten erfassen"):
     with st.form("input_form", clear_on_submit=True):
-        default_date = datetime.now().replace(day=1)
-        input_date = st.date_input("Monat auswählen", value=default_date)
-        input_amount = st.number_input("Betrag in €", min_value=0.0, step=100.0, format="%.2f")
-        
-        if st.form_submit_button("In Datenbank speichern"):
-            try:
-                supabase.table("ring_prov").upsert({
-                    "Monat": input_date.strftime("%Y-%m-%d"), 
-                    "Betrag": input_amount
-                }).execute()
-                st.success(f"Speichern erfolgreich!")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Fehler beim Speichern: {e}")
+        input_date = st.date_input("Monat", value=datetime.now().replace(day=1))
+        input_amount = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
+        if st.form_submit_button("Speichern"):
+            supabase.table("ring_prov").upsert({"Monat": input_date.strftime("%Y-%m-%d"), "Betrag": input_amount}).execute()
+            st.cache_data.clear()
+            st.rerun()
 
-# --- ANZEIGE-BEREICH ---
 try:
-    df_raw = load_data()
-
+    df_raw, df_future, trend = calculate_all_forecasts(load_data())
     if not df_raw.empty:
-        df_forecast, trend = calculate_forecast(df_raw)
-
-        # Kacheln Layout (Werte in satterem Grün via CSS)
-        col1, col2 = st.columns(2)
-        with col1:
+        # Kacheln
+        c1, c2 = st.columns(2)
+        with c1:
             st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{df_raw["Betrag"].iloc[-1]:,.2f} €</div></div>', unsafe_allow_html=True)
             st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend*100:+.1f} %</div></div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{df_forecast["Betrag"].iloc[1]:,.2f} €</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{df_future["Betrag"].iloc[1]:,.2f} €</div></div>', unsafe_allow_html=True)
             st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Ø Letzte 12 Monate</div><div class="kachel-wert">{df_raw["Betrag"].tail(12).mean():,.2f} €</div></div>', unsafe_allow_html=True)
 
-        # --- PLOTLY CHART ---
+        # --- CHART MIT FLÄCHE ---
         fig = go.Figure()
 
-        # Ist-Daten (Sattes Grün)
+        # 1. Historische Prognose als Fläche (Dezentes Grau)
+        fig.add_trace(go.Scatter(
+            x=df_raw['Monat'], y=df_raw['hist_forecast'],
+            fill='tozeroy', mode='none', name='Prognose-Basis',
+            fillcolor='rgba(169, 169, 169, 0.2)' # Sehr transparentes Grau
+        ))
+
+        # 2. Ist-Daten (Sattes Grün)
         fig.add_trace(go.Scatter(
             x=df_raw['Monat'], y=df_raw['Betrag'],
             mode='lines+markers', name='Ist',
-            line=dict(color='#2e7d32', width=3),
-            marker=dict(size=8)
+            line=dict(color='#2e7d32', width=3), marker=dict(size=8)
         ))
 
-        # Forecast-Daten (Grau, jetzt auch mit Markern/Punkten)
+        # 3. Zukünftiger Forecast (Graue Linie)
         fig.add_trace(go.Scatter(
-            x=df_forecast['Monat'], y=df_forecast['Betrag'],
+            x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
-            line=dict(color='#A9A9A9', width=3),
-            marker=dict(size=8)
+            line=dict(color='#A9A9A9', width=3), marker=dict(size=8)
         ))
 
         fig.update_layout(
             margin=dict(l=10, r=10, t=10, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            hovermode="x unified",
-            yaxis=dict(title="€")
+            hovermode="x unified", yaxis=dict(title="€")
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- DETAILS ---
         with st.expander("Details: Forecast Tabelle"):
-            st.table(df_forecast.iloc[1:][['Monat', 'Betrag']].assign(
-                Monat=lambda x: x['Monat'].dt.strftime('%b %Y'),
-                Betrag=lambda x: x['Betrag'].map('{:,.2f} €'.format)
-            ).set_index('Monat'))
-
-    else:
-        st.info("Noch keine Daten vorhanden.")
-
+            st.table(df_future.iloc[1:].assign(Monat=lambda x: x['Monat'].dt.strftime('%b %Y'), Betrag=lambda x: x['Betrag'].map('{:,.2f} €'.format)).set_index('Monat'))
 except Exception as e:
-    st.error(f"Ein Fehler ist aufgetreten: {e}")
+    st.error(f"Fehler: {e}")
