@@ -54,12 +54,9 @@ supabase = init_connection()
 
 # --- 3. DATEN LADEN ---
 def load_data():
-    # Korrektur: .order("Monat") ohne das ungültige 'descending' Argument
     response = supabase.table("ring_prov").select("*").order("Monat").execute()
-    
     if not response.data:
         return pd.DataFrame()
-    
     df = pd.DataFrame(response.data)
     df['Monat'] = pd.to_datetime(df['Monat'])
     df['Betrag'] = pd.to_numeric(df['Betrag'])
@@ -69,22 +66,26 @@ def load_data():
 def calculate_forecast(df_historical):
     df = df_historical.sort_values('Monat').copy()
     
-    # Vorjahreswerte zuordnen
+    # 1. Zuordnung der Vorjahreswerte
     df['prev_year_amount'] = df['Betrag'].shift(12)
     
-    # Steigerungsrate zum Vorjahr (YoY)
+    # 2. Berechnung der Wachstumsrate YoY
     df['yoy_growth'] = (df['Betrag'] / df['prev_year_amount']) - 1
     
-    # Trend-Faktor: Durchschnitt der letzten 6 verfügbaren Monate
+    # 3. Ermittlung des Trend-Faktors (Ø der letzten 6 Monate Wachstum)
     growth_rates = df['yoy_growth'].dropna()
     if len(growth_rates) >= 6:
         trend_factor = growth_rates.tail(6).mean()
     else:
         trend_factor = growth_rates.mean() if not growth_rates.empty else 0
     
-    # 12-Monats-Forecast generieren
-    last_date = df['Monat'].max()
-    forecast_list = []
+    # 4. 12-Monats-Forecast generieren
+    last_row = df.iloc[-1]
+    last_date = last_row['Monat']
+    last_amount = last_row['Betrag']
+    
+    # Wir starten die Liste mit dem LETZTEN ECHTEN Punkt, um die Linien zu verbinden
+    forecast_list = [{'Monat': last_date, 'Betrag': last_amount}]
     
     for i in range(1, 13):
         forecast_month = last_date + pd.DateOffset(months=i)
@@ -132,46 +133,31 @@ try:
     if not df_raw.empty:
         df_forecast, trend = calculate_forecast(df_raw)
 
-        # --- KACHELN NEBENEINANDER (2 pro Zeile) ---
+        # Kacheln Layout
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.markdown(f"""<div class="kachel-container">
-                <div class="kachel-titel">Letzter Monat</div>
-                <div class="kachel-wert">{df_raw['Betrag'].iloc[-1]:,.2f} €</div>
-            </div>""", unsafe_allow_html=True)
-            
-            st.markdown(f"""<div class="kachel-container">
-                <div class="kachel-titel">Trend (Ø 6M YoY)</div>
-                <div class="kachel-wert">{trend*100:+.1f} %</div>
-            </div>""", unsafe_allow_html=True)
-
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{df_raw["Betrag"].iloc[-1]:,.2f} €</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend*100:+.1f} %</div></div>', unsafe_allow_html=True)
         with col2:
-            st.markdown(f"""<div class="kachel-container">
-                <div class="kachel-titel">Forecast (Nächster M)</div>
-                <div class="kachel-wert">{df_forecast['Betrag'].iloc[0]:,.2f} €</div>
-            </div>""", unsafe_allow_html=True)
-            
-            st.markdown(f"""<div class="kachel-container">
-                <div class="kachel-titel">Ø Letzte 12 Monate</div>
-                <div class="kachel-wert">{df_raw['Betrag'].tail(12).mean():,.2f} €</div>
-            </div>""", unsafe_allow_html=True)
+            # Wir nehmen iloc[1], da iloc[0] jetzt der Verbindungspunkt (letzter Ist-Monat) ist
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{df_forecast["Betrag"].iloc[1]:,.2f} €</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Ø Letzte 12 Monate</div><div class="kachel-wert">{df_raw["Betrag"].tail(12).mean():,.2f} €</div></div>', unsafe_allow_html=True)
 
         # --- PLOTLY CHART ---
         fig = go.Figure()
 
-        # Ist-Daten
+        # Ist-Daten (Blau)
         fig.add_trace(go.Scatter(
             x=df_raw['Monat'], y=df_raw['Betrag'],
             mode='lines+markers', name='Ist',
             line=dict(color='#1f77b4', width=3)
         ))
 
-        # Forecast-Daten
+        # Forecast-Daten (Grau, durchgezogen und verbunden)
         fig.add_trace(go.Scatter(
             x=df_forecast['Monat'], y=df_forecast['Betrag'],
             mode='lines', name='Forecast',
-            line=dict(color='#ff7f0e', width=3, dash='dot')
+            line=dict(color='#A9A9A9', width=3) # DarkGray
         ))
 
         fig.update_layout(
@@ -182,15 +168,15 @@ try:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- DETAILS ---
+        # --- DETAILS (Wir zeigen nur die echten Forecast-Monate ohne den Verbindungspunkt) ---
         with st.expander("Details: Forecast Tabelle"):
-            st.table(df_forecast[['Monat', 'Betrag']].assign(
+            st.table(df_forecast.iloc[1:][['Monat', 'Betrag']].assign(
                 Monat=lambda x: x['Monat'].dt.strftime('%b %Y'),
                 Betrag=lambda x: x['Betrag'].map('{:,.2f} €'.format)
             ).set_index('Monat'))
 
     else:
-        st.info("Noch keine Daten in 'ring_prov' vorhanden.")
+        st.info("Noch keine Daten vorhanden.")
 
 except Exception as e:
     st.error(f"Ein Fehler ist aufgetreten: {e}")
