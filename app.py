@@ -7,10 +7,9 @@ from datetime import datetime
 # --- 1. SEITEN-KONFIGURATION ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
-# --- HILFSFUNKTION FÜR EURO-FORMATIERUNG ---
+# --- HILFSFUNKTION FÜR EURO-FORMATIERUNG (Kacheln) ---
 def format_euro(val):
     if pd.isna(val): return "0,00 €"
-    # Formatiert Zahl zu: 1.234,56 €
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
 # --- CUSTOM CSS ---
@@ -106,8 +105,8 @@ try:
         # --- CHART ---
         fig = go.Figure()
 
-        # Konfiguration für europäisches Zahlenformat im Hover
-        # d3-format: , für Tausender (wird via separators zu Punkt) und .2f für Dezimal
+        # Hover-Vorlage für deutsches Format
+        # %{y:,.2f} nutzt Punkt für Tausender und Komma für Dezimal dank 'separators' unten
         hover_template = '%{x|%b %Y}<br>Betrag: %{y:,.2f} €<extra></extra>'
 
         # 1. Historische Prognose (Fläche)
@@ -136,10 +135,11 @@ try:
         ))
 
         fig.update_layout(
+            separators=".,", # Punkt als Tausender, Komma als Dezimal (Global für dieses Chart)
             margin=dict(l=10, r=10, t=10, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
             hovermode="x unified",
-            yaxis=dict(title="€", tickformat=",.", separators=".,"), # Setzt Punkt als Tausender und Komma als Dezimal
+            yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
             xaxis=dict(tickformat="%b %Y")
         )
         st.plotly_chart(fig, use_container_width=True)
