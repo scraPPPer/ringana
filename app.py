@@ -12,7 +12,7 @@ def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CSS (Dein 2x3 Grid) ---
+# --- CSS (2x3 Grid) ---
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
@@ -44,43 +44,45 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. LOGIK (DEINE ORIGINAL-PROGNOSE) ---
+# --- 3. LOGIK (DEINE EXAKTE FORMEL) ---
 def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # 1. Trend berechnen (Steigerung der letzten 6 Monate zum Vorjahr)
-    df['prev_yr'] = df['Betrag'].shift(12)
-    df['yoy_growth'] = (df['Betrag'] / df['prev_yr']) - 1
+    # TREND-ERMITTLUNG (Basierend auf den LETZTEN 6 verfügbaren Ist-Monaten)
+    # 1. Wir berechnen für alle Ist-Monate das YoY Wachstum
+    df_growth = df.copy()
+    df_growth['prev_year_val'] = df_growth['Betrag'].shift(12)
+    df_growth['yoy'] = (df_growth['Betrag'] / df_growth['prev_year_val']) - 1
     
-    # Mittelwert der letzten 6 verfügbaren YoY-Wachstumsraten
-    growth_rates = df['yoy_growth'].dropna()
-    trend = growth_rates.tail(6).mean() if not growth_rates.empty else 0
+    # 2. Wir nehmen nur die letzten 6 verfügbaren Wachstumsraten (z.B. Juli-Dez)
+    # Der zu prognostizierende Monat (Januar) ist hier natürlich noch nicht drin.
+    aktueller_trend = df_growth['yoy'].dropna().tail(6).mean() if not df_growth['yoy'].dropna().empty else 0
     
-    # 2. Durchgehende Zeitachse (Feld-Ansatz)
+    # PROGNOSE-ERSTELLUNG (Feld-Ansatz)
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
     df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
     
-    # 3. Prognose für alle Monate berechnen (Vorjahr * (1 + Trend))
+    # 3. Prognose für alle Monate: IMMER (Vorjahr des Monats * fixierter Trend)
     def get_prog(row):
         target_prev = row['Monat'] - pd.DateOffset(years=1)
-        # Wir suchen den Wert in den Originaldaten
         prev_row = df[df['Monat'] == target_prev]
         if not prev_row.empty:
-            return prev_row['Betrag'].values[0] * (1 + trend)
+            # Hier nutzen wir den fixen 'aktueller_trend'
+            return prev_row['Betrag'].values[0] * (1 + aktueller_trend)
         return None
 
     df_total['prognose'] = df_total.apply(get_prog, axis=1)
     
-    # 4. Ampel-Logik
+    # Ampel-Farben (Ist vs. Prognose)
     def get_color(row):
         if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242' 
         return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
 
     df_total['farbe'] = df_total.apply(get_color, axis=1)
     
-    return df_total, trend, (last_dt, df['Betrag'].iloc[-1])
+    return df_total, aktueller_trend, (last_dt, df['Betrag'].iloc[-1])
 
 # --- 4. APP ---
 st.title("Provisions-Dashboard")
@@ -106,21 +108,16 @@ try:
         if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
         if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
 
-        # Zeiträume für Berechnungen festlegen
         if st.session_state.filter == "1j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-            # Vorperiode = 1 Jahr vor dem aktuellen Jahr
-            start_prev = last_pt[0] - pd.DateOffset(years=2)
-            end_prev = last_pt[0] - pd.DateOffset(years=1)
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=2), last_pt[0] - pd.DateOffset(years=1)
         elif st.session_state.filter == "3j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-            start_prev = last_pt[0] - pd.DateOffset(years=6)
-            end_prev = last_pt[0] - pd.DateOffset(years=3)
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=6), last_pt[0] - pd.DateOffset(years=3)
         else:
             df_plot = df_total
             start_prev, end_prev = None, None
 
-        # Summe und Vergleichsberechnung
         sum_period = df_plot['Betrag'].sum()
         diff_val = "--"
         if start_prev:
@@ -128,7 +125,7 @@ try:
             if sum_prev > 0:
                 diff_val = f"{((sum_period / sum_prev) - 1) * 100:+.1f} %"
 
-        # Kacheln (Original-Set)
+        # Kacheln
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
