@@ -49,13 +49,11 @@ def calculate_logic(df_db):
     df_ist = df_db.sort_values('Monat').copy()
     last_dt = df_ist['Monat'].max()
     
-    # Berechnungen
     df_ist['prev_yr'] = df_ist['Betrag'].shift(12)
     df_ist['growth'] = (df_ist['Betrag'] / df_ist['prev_yr']) - 1
     trend = df_ist['growth'].dropna().tail(6).mean() if not df_ist['growth'].dropna().empty else 0
     df_ist['prognose_wert'] = df_ist['prev_yr'] * (1 + trend)
     
-    # Forecast (Startet einen Monat später)
     future = []
     for i in range(1, 13):
         f_dt = last_dt + pd.DateOffset(months=i)
@@ -71,11 +69,11 @@ st.title("Provisions-Dashboard")
 
 with st.expander("➕ Neue Daten erfassen"):
     with st.form("input", clear_on_submit=True):
-        d_val = date.today().replace(day=1) - relativedelta(months=1)
-        i_date = st.date_input("Monat", value=d_val)
-        i_amt = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
+        default_date = date.today().replace(day=1) - relativedelta(months=1)
+        input_date = st.date_input("Monat", value=default_date)
+        input_amount = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
         if st.form_submit_button("Speichern"):
-            supabase.table("ring_prov").upsert({"Monat": i_date.strftime("%Y-%m-%d"), "Betrag": i_amt}).execute()
+            supabase.table("ring_prov").upsert({"Monat": input_date.strftime("%Y-%m-%d"), "Betrag": input_amount}).execute()
             st.cache_data.clear()
             st.rerun()
 
@@ -105,19 +103,20 @@ try:
                 <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_future['Betrag'].iloc[0])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_ist['Betrag'].tail(12).mean())}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(df_plot['Betrag'].sum())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Korrekt</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Final</div></div>
             </div>
         """, unsafe_allow_html=True)
 
         # --- CHART ---
         fig = go.Figure()
 
-        # 1. Prognose-Fläche (Hover wieder aktiv!)
+        # 1. Prognose-Fläche (Nur Ist-Bereich)
+        # Wir fügen explizit None-Werte hinzu, um Interpolation zu verhindern
         fig.add_trace(go.Scatter(
             x=df_plot['Monat'], y=df_plot['prognose_wert'],
             fill='tozeroy', mode='none', name='Prognose',
             fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
+            hoverinfo="name+y" # Verhindert, dass er Daten von "außerhalb" holt
         ))
 
         # 2. Ist-Linie (Grün)
@@ -125,7 +124,7 @@ try:
             x=df_plot['Monat'], y=df_plot['Betrag'],
             mode='lines+markers', name='Ist',
             line=dict(color='#2e7d32', width=3), marker=dict(size=8),
-            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
+            hoverinfo="name+y"
         ))
 
         # 3. Forecast (Grau) - Startet Monat + 1
@@ -133,16 +132,22 @@ try:
             x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
             line=dict(color='#A9A9A9', width=3), marker=dict(size=8),
-            hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"
+            hoverinfo="name+y"
         ))
 
         fig.update_layout(
             separators=".,", margin=dict(l=5, r=5, t=10, b=10),
             legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
             hovermode="x unified",
+            # Das hier ist das "Geheimnis": Verhindert das Füllen von Lücken im Hover
+            hoverlabel=dict(namelength=-1), 
             yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
-            xaxis=dict(tickformat="%b %y")
+            xaxis=dict(tickformat="%b %y", rangebreaks=[dict(values=df_future['Monat'].tolist(), enabled=False)]) if False else dict(tickformat="%b %y")
         )
+        
+        # Um ganz sicher zu gehen: Wir überschreiben das Hover-Verhalten global
+        fig.update_traces(connectgaps=False)
+
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
