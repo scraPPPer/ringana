@@ -12,11 +12,10 @@ def format_euro(val):
     if pd.isna(val): return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CUSTOM CSS FÜR STRIKTES 2er-GRID ---
+# --- CUSTOM CSS ---
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
-    
     .kachel-grid {
         display: flex;
         flex-wrap: wrap;
@@ -24,25 +23,19 @@ st.markdown("""
         justify-content: space-between;
         margin-bottom: 20px;
     }
-    
     .kachel-container {
         background-color: #f0f2f6;
         border-radius: 10px;
         padding: 12px 5px;
         text-align: center;
         border: 1px solid #e6e9ef;
-        flex: 0 0 48%; /* Exakt zwei Spalten nebeneinander */
+        flex: 0 0 48%;
         box-sizing: border-box;
         margin-bottom: 5px;
     }
-    
     .kachel-titel { font-size: 0.75rem; color: #5f6368; margin-bottom: 3px; }
     .kachel-wert { font-size: 1.1rem; font-weight: bold; color: #2e7d32; }
-    
-    .stButton>button { 
-        border-radius: 20px; 
-        font-size: 0.8rem;
-    }
+    .stButton>button { border-radius: 20px; font-size: 0.8rem; }
     .main-button>button {
         background-color: #2e7d32 !important; color: white !important; font-weight: bold; height: 3em;
     }
@@ -125,7 +118,6 @@ try:
         if st.session_state.filter == "1j":
             start_date = last_month - pd.DateOffset(years=1)
             df_filtered = df_raw_all[df_raw_all['Monat'] > start_date]
-            # Vergleichszeitraum für die 6. Kachel (Vorheriges Jahr)
             df_prev_period = df_raw_all[(df_raw_all['Monat'] <= start_date) & (df_raw_all['Monat'] > start_date - pd.DateOffset(years=1))]
         elif st.session_state.filter == "3j":
             start_date = last_month - pd.DateOffset(years=3)
@@ -135,7 +127,6 @@ try:
             df_filtered = df_raw_all
             df_prev_period = pd.DataFrame()
 
-        # 6. Kachel Logik: Vergleich zum Vor-Zeitraum
         sum_period = df_filtered['Betrag'].sum()
         if not df_prev_period.empty:
             sum_prev = df_prev_period['Betrag'].sum()
@@ -144,7 +135,7 @@ try:
         else:
             diff_val = "--"
 
-        # --- GRID AUSGABE (3 Zeilen à 2 Kacheln) ---
+        # --- GRID AUSGABE ---
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container">
@@ -176,11 +167,14 @@ try:
 
         # --- CHART ---
         fig = go.Figure()
-        hover_template = '%{{x|%b %Y}}<br>Betrag: %{{y:,.2f}} €<extra></extra>'
+        
+        # Korrigiertes Hover-Template (einfache geschweifte Klammern)
+        h_temp = "%{x|%b %Y}<br>Betrag: %{y:,.2f} €<extra></extra>"
+
         df_plot_hist = df_filtered.dropna(subset=['hist_forecast'])
-        fig.add_trace(go.Scatter(x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate=hover_template))
-        fig.add_trace(go.Scatter(x=df_filtered['Monat'], y=df_filtered['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#2e7d32', width=3), marker=dict(size=8), hovertemplate=hover_template))
-        fig.add_trace(go.Scatter(x=df_future['Monat'], y=df_future['Betrag'], mode='lines+markers', name='Forecast', line=dict(color='#A9A9A9', width=3), marker=dict(size=8), hovertemplate=hover_template))
+        fig.add_trace(go.Scatter(x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate=h_temp))
+        fig.add_trace(go.Scatter(x=df_filtered['Monat'], y=df_filtered['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#2e7d32', width=3), marker=dict(size=8), hovertemplate=h_temp))
+        fig.add_trace(go.Scatter(x=df_future['Monat'], y=df_future['Betrag'], mode='lines+markers', name='Forecast', line=dict(color='#A9A9A9', width=3), marker=dict(size=8), hovertemplate=h_temp))
         
         fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€", tickformat=",.", exponentformat="none"), xaxis=dict(tickformat="%b %Y"))
         st.plotly_chart(fig, use_container_width=True)
