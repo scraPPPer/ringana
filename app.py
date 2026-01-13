@@ -12,7 +12,7 @@ def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# CSS
+# CSS für das 2x3 Grid
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
@@ -42,74 +42,115 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- LOGIK ---
+# --- 2. LOGIK (DIE MANUELLE RECHNUNG ALS CODE) ---
 def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # Faktor-Berechnung (VJ-Match)
-    df['monat_vj'] = df['Monat'] - pd.DateOffset(years=1)
-    df = df.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'monat_vj', 'Betrag': 'betrag_vj'}), on='monat_vj', how='left')
-    df['faktor'] = df['Betrag'] / df['betrag_vj']
+    # Faktor-Berechnung für jeden Monat (Ist / Vorjahr)
+    def get_factor_for_row(row, full_df):
+        vj_date = row['Monat'] - pd.DateOffset(years=1)
+        vj_val = full_df[full_df['Monat'] == vj_date]['Betrag']
+        if not vj_val.empty and vj_val.values[0] != 0:
+            return row['Betrag'] / vj_val.values[0]
+        return None
+
+    df['faktor'] = df.apply(lambda r: get_factor_for_row(r, df), axis=1)
     
-    # Trend aus den letzten 6 verfügbaren Faktoren
+    # Trend-Ermittlung: Mittelwert der letzten 6 verfügbaren Faktoren
     faktor_series = df.dropna(subset=['faktor'])['faktor']
     avg_f = faktor_series.tail(6).mean() if not faktor_series.empty else 1.0
     
-    # Zeitachse (Feld-Ansatz)
+    # Zeitachse (Feld-Ansatz für Chart)
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
     df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
     
-    # Prognose: VJ * avg_f
-    df_total['monat_vj'] = df_total['Monat'] - pd.DateOffset(years=1)
-    df_total = df_total.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'monat_vj', 'Betrag': 'betrag_vj_prog'}), on='monat_vj', how='left')
-    df_total['prognose'] = df_total['betrag_vj_prog'] * avg_f
-    
-    # Ampel-Logik & Trennung Hover
-    def get_styles(row):
-        ist_val = row['Betrag']
-        prog_val = row['prognose']
-        if pd.isna(ist_val):
-            return '#424242', "Prognose: " + format_euro(prog_val)
-        color = '#2e7d32' if ist_val >= prog_val else '#ff9800'
-        return color, f"Ist: {format_euro(ist_val)}<br>Prognose: {format_euro(prog_val)}"
+    # Prognose berechnen: Vorjahresmonat * avg_f
+    def get_prognose(row, full_df, trend):
+        vj_date = row['Monat'] - pd.DateOffset(years=1)
+        vj_val = full_df[full_df['Monat'] == vj_date]['Betrag']
+        if not vj_val.empty:
+            return vj_val.values[0] * trend
+        return None
 
-    styles = df_total.apply(get_styles, axis=1)
-    df_total['farbe'] = [s[0] for s in styles]
+    df_total['prognose'] = df_total.apply(lambda r: get_prognose(r, df, avg_f), axis=1)
+    
+    # Ampel-Farben bestimmen
+    def get_color(row):
+        if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242'
+        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
+    
+    df_total['farbe'] = df_total.apply(get_color, axis=1)
     
     return df_total, avg_f, (last_dt, df['Betrag'].iloc[-1])
 
-# --- UI ---
+# --- 3. UI & ANZEIGE ---
 st.title("Provisions-Dashboard")
+
+with st.expander("➕ Neue Daten erfassen"):
+    with st.form("input", clear_on_submit=True):
+        d_val = date.today().replace(day=1) - relativedelta(months=1)
+        i_date = st.date_input("Monat", value=d_val)
+        i_amt = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
+        if st.form_submit_button("Speichern"):
+            supabase.table("ring_prov").upsert({"Monat": i_date.strftime("%Y-%m-%d"), "Betrag": i_amt}).execute()
+            st.cache_data.clear()
+            st.rerun()
 
 try:
     df_total, avg_f, last_pt = calculate_logic(load_data())
     
     if not df_total.empty:
-        # Kacheln
+        # Filter (Session State)
+        c_f1, c_f2, c_f3 = st.columns(3)
+        if 'filter' not in st.session_state: st.session_state.filter = "alles"
+        if c_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
+        if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
+        if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
+
+        # Filter-Logik für Summen & Grafik
+        if st.session_state.filter == "1j":
+            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=2), last_pt[0] - pd.DateOffset(years=1)
+        elif st.session_state.filter == "3j":
+            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=6), last_pt[0] - pd.DateOffset(years=3)
+        else:
+            df_plot = df_total
+            start_prev, end_prev = None, None
+
+        # Vergleichsberechnung für die 6. Kachel
+        sum_period = df_plot['Betrag'].sum()
+        diff_val = "--"
+        if start_prev:
+            sum_prev = df_total[(df_total['Monat'] > start_prev) & (df_total['Monat'] <= end_prev)]['Betrag'].sum()
+            if sum_prev > 0:
+                diff_val = f"{((sum_period / sum_prev) - 1) * 100:+.1f} %"
+
+        # Die 6 Kacheln (Vollständig!)
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Wachstumsfaktor (Ø 6M)</div><div class="kachel-wert">{avg_f:.3f}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Forecast ({ (last_pt[0] + pd.DateOffset(months=1)).strftime('%m/%y') })</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_total.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe (Gesamt)</div><div class="kachel-wert">{format_euro(df_total['Betrag'].sum())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Präzise</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
             </div>
         """, unsafe_allow_html=True)
 
         # CHART
         fig = go.Figure()
-        # Nur Prognose-Fläche
-        fig.add_trace(go.Scatter(x=df_total['Monat'], y=df_total['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hoverinfo='skip'))
-        # Ist-Linie mit Ampel
-        fig.add_trace(go.Scatter(x=df_total['Monat'], y=df_total['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_total['farbe'], line=dict(width=1, color='white')), hovertemplate="%{x|%b %y}<br>Ist: %{y:,.2f} €<extra></extra>", connectgaps=False))
-        # Unsichtbarer Forecast-Hover
-        df_f = df_total[df_total['Monat'] > last_pt[0]]
-        fig.add_trace(go.Scatter(x=df_f['Monat'], y=df_f['prognose'], mode='markers', name='Forecast', marker=dict(color='#A9A9A9', size=8), hovertemplate="%{x|%b %y}<br>Forecast: %{y:,.2f} €<extra></extra>"))
+        # Fläche
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hoverinfo='skip'))
+        # Ist-Linie
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_plot['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>", connectgaps=False))
+        # Forecast Hover (Punkte in der Zukunft)
+        df_f = df_plot[df_plot['Monat'] > last_pt[0]]
+        fig.add_trace(go.Scatter(x=df_f['Monat'], y=df_f['prognose'], mode='markers', name='Forecast', marker=dict(color='#A9A9A9', size=8), hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"))
 
-        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="closest", yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
+        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
