@@ -7,7 +7,7 @@ from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Provisions-Tracker", layout="centered")
+st.set_page_config(page_title="freshe.friedels Dashboard", layout="centered")
 
 def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
@@ -81,6 +81,8 @@ def calculate_logic(df_db):
     return df_total, last_known_trend, (last_dt, df['Betrag'].iloc[-1])
 
 # --- 4. APP ---
+st.title("freshe.friedels Dashboard")
+
 try:
     df_res, current_trend, last_pt = calculate_logic(load_data())
     
@@ -121,17 +123,17 @@ try:
         # CHART
         fig = go.Figure()
         
-        # 1. Prognose (Graue Fläche) - jetzt mit Hover-Anzeige
+        # 1. Prognose (Graue Fläche)
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['prognose'], 
             fill='tozeroy', mode='lines', 
-            line=dict(color='rgba(0,0,0,0)'), # Linie der Fläche unsichtbar
+            line=dict(color='rgba(0,0,0,0)'), 
             fillcolor='rgba(169, 169, 169, 0.2)', 
             name='Prognose',
             hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
         ))
         
-        # 2. Exponentielle Trendlinie (Nur Optik, kein Hover)
+        # 2. Exponentielle Trendlinie
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['exp_trend'], 
             mode='lines', 
@@ -139,7 +141,7 @@ try:
             hoverinfo='skip' 
         ))
 
-        # 3. Ist-Verlauf (Punkte & Linie)
+        # 3. Ist-Verlauf
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['Betrag'], 
             mode='lines+markers', 
