@@ -17,21 +17,13 @@ st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
     .kachel-grid {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        justify-content: space-between;
-        margin-bottom: 20px;
+        display: flex; flex-wrap: wrap; gap: 10px;
+        justify-content: space-between; margin-bottom: 20px;
     }
     .kachel-container {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 12px 5px;
-        text-align: center;
-        border: 1px solid #e6e9ef;
-        flex: 0 0 48%;
-        box-sizing: border-box;
-        margin-bottom: 5px;
+        background-color: #f0f2f6; border-radius: 10px; padding: 12px 5px;
+        text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%;
+        box-sizing: border-box; margin-bottom: 5px;
     }
     .kachel-titel { font-size: 0.75rem; color: #5f6368; margin-bottom: 3px; }
     .kachel-wert { font-size: 1.1rem; font-weight: bold; color: #2e7d32; }
@@ -106,7 +98,7 @@ try:
     df_raw_all, df_future, trend = calculate_all_forecasts(load_data())
     
     if not df_raw_all.empty:
-        # Filter Buttons
+        # Filter
         st.write("Zeitraum filtern:")
         col_f1, col_f2, col_f3 = st.columns(3)
         if 'filter' not in st.session_state: st.session_state.filter = "alles"
@@ -128,12 +120,7 @@ try:
             df_prev_period = pd.DataFrame()
 
         sum_period = df_filtered['Betrag'].sum()
-        if not df_prev_period.empty:
-            sum_prev = df_prev_period['Betrag'].sum()
-            diff_pct = ((sum_period / sum_prev) - 1) * 100
-            diff_val = f"{diff_pct:+.1f} %"
-        else:
-            diff_val = "--"
+        diff_val = f"{((sum_period / df_prev_period['Betrag'].sum()) - 1) * 100:+.1f} %" if not df_prev_period.empty else "--"
 
         # --- GRID AUSGABE ---
         st.markdown(f"""
@@ -167,32 +154,39 @@ try:
 
         # --- CHART ---
         fig = go.Figure()
-        
-        # Hover-Template: Zeigt nur den Namen der Spur und den y-Wert an
-        h_temp = "%{fullData.name}: %{y:,.2f} €<extra></extra>"
 
+        # Wir nutzen unterschiedliche Hover-Definitionen
         df_plot_hist = df_filtered.dropna(subset=['hist_forecast'])
-        fig.add_trace(go.Scatter(x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate=h_temp))
-        fig.add_trace(go.Scatter(x=df_filtered['Monat'], y=df_filtered['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#2e7d32', width=3), marker=dict(size=8), hovertemplate=h_temp))
-        
-        # Für den Forecast blenden wir den ersten Punkt (der die Verbindung ist) im Hover aus,
-        # damit er im Nov 2025 nicht doppelt erscheint.
         fig.add_trace(go.Scatter(
-            x=df_future['Monat'], 
-            y=df_future['Betrag'], 
-            mode='lines+markers', 
-            name='Forecast', 
-            line=dict(color='#A9A9A9', width=3), 
-            marker=dict(size=8),
-            hovertemplate=h_temp
+            x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'],
+            fill='tozeroy', mode='none', name='Prognose-Basis',
+            fillcolor='rgba(169, 169, 169, 0.2)',
+            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
         ))
+
+        fig.add_trace(go.Scatter(
+            x=df_filtered['Monat'], y=df_filtered['Betrag'],
+            mode='lines+markers', name='Ist',
+            line=dict(color='#2e7d32', width=3), marker=dict(size=8),
+            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
+        ))
+
+        # Trick: Wir blenden den Hover für den allerersten Punkt (Verbindungspunkt) aus
+        hover_forecast = [None] + ["Forecast: %{y:,.2f} €<extra></extra>"] * (len(df_future)-1)
         
+        fig.add_trace(go.Scatter(
+            x=df_future['Monat'], y=df_future['Betrag'],
+            mode='lines+markers', name='Forecast',
+            line=dict(color='#A9A9A9', width=3), marker=dict(size=8),
+            hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"
+        ))
+
         fig.update_layout(
-            separators=".,", 
-            margin=dict(l=5, r=5, t=10, b=10), 
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), 
-            hovermode="x unified", 
-            yaxis=dict(title="€", tickformat=",.", exponentformat="none"), 
+            separators=".,", margin=dict(l=5, r=5, t=10, b=10),
+            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
+            hovermode="x unified",
+            hoverlabel=dict(bgcolor="white", font_size=12),
+            yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
             xaxis=dict(tickformat="%b %Y")
         )
         st.plotly_chart(fig, use_container_width=True)
