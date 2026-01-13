@@ -15,6 +15,7 @@ st.set_page_config(
     layout="centered"
 )
 
+# Fix: CSS-Klammern verdoppelt, damit der f-string nicht bricht
 st.markdown(f"""
     <head>
         <link rel="apple-touch-icon" href="{LOGO_URL}">
@@ -27,7 +28,7 @@ st.markdown(f"""
         background-color: #f0f2f6; border-radius: 10px; padding: 12px 5px;
         text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%;
         box-sizing: border-box; margin-bottom: 5px;
-    }
+    }}
     .kachel-titel {{ font-size: 0.75rem; color: #5f6368; }}
     .kachel-wert {{ font-size: 1.1rem; font-weight: bold; color: #2e7d32; }}
     </style>
@@ -99,31 +100,25 @@ try:
         if c2.button("1 Zeitjahr", use_container_width=True): st.session_state.f = "1j"
         if c3.button("3 Zeitjahre", use_container_width=True): st.session_state.f = "3j"
 
-        df_p = df_res.copy()      # Für den Graphen
-        df_kacheln = df_res.copy() # Für die Kacheln
+        df_p = df_res.copy()      
+        df_kacheln = df_res.copy() 
         diff_val = "--"
         
         if st.session_state.f == "1j":
-            # Graphen-Zeitraum: 12 Monate + der Monat davor (13 Monate gesamt)
             df_p = df_res[df_res['Monat'] >= (last_pt[0] - pd.DateOffset(years=1))]
-            # Kachel-Zeitraum: Exakt die letzten 12 Monate
             df_kacheln = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-            
             sum_curr = df_kacheln['Betrag'].sum()
             sum_prev = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=2))) & (df_res['Monat'] <= (last_pt[0] - pd.DateOffset(years=1)))]['Betrag'].sum()
             if sum_prev > 0: diff_val = f"{((sum_curr / sum_prev) - 1) * 100:+.1f} %"
             
         elif st.session_state.f == "3j":
-            # Graphen-Zeitraum: 36 Monate + der Monat davor (37 Monate gesamt)
             df_p = df_res[df_res['Monat'] >= (last_pt[0] - pd.DateOffset(years=3))]
-            # Kachel-Zeitraum: Exakt die letzten 36 Monate
             df_kacheln = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-            
             sum_curr = df_kacheln['Betrag'].sum()
             sum_prev = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=6))) & (df_res['Monat'] <= (last_pt[0] - pd.DateOffset(years=3)))]['Betrag'].sum()
             if sum_prev > 0: diff_val = f"{((sum_curr / sum_prev) - 1) * 100:+.1f} %"
 
-        # Kacheln (basierend auf df_kacheln)
+        # Kacheln
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
@@ -135,7 +130,7 @@ try:
             </div>
         """, unsafe_allow_html=True)
 
-        # CHART (basierend auf df_p)
+        # CHART
         fig = go.Figure()
         
         # 1. Prognose (Graue Fläche)
