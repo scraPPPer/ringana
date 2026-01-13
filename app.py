@@ -44,42 +44,49 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. LOGIK (DEINE EXAKTE FORMEL) ---
+# --- 3. LOGIK (PRÄZISE EXCEL-BERECHNUNG) ---
 def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # TREND-ERMITTLUNG (Basierend auf den LETZTEN 6 verfügbaren Ist-Monaten)
-    # 1. Wir berechnen für alle Ist-Monate das YoY Wachstum
-    df_growth = df.copy()
-    df_growth['prev_year_val'] = df_growth['Betrag'].shift(12)
-    df_growth['yoy'] = (df_growth['Betrag'] / df_growth['prev_year_val']) - 1
+    # TREND-ERMITTLUNG:
+    # 1. Vorjahreswerte per Datums-Match finden (wie SVERWEIS)
+    df_compare = df.copy()
+    df_compare['monat_vj'] = df_compare['Monat'] - pd.DateOffset(years=1)
     
-    # 2. Wir nehmen nur die letzten 6 verfügbaren Wachstumsraten (z.B. Juli-Dez)
-    # Der zu prognostizierende Monat (Januar) ist hier natürlich noch nicht drin.
-    aktueller_trend = df_growth['yoy'].dropna().tail(6).mean() if not df_growth['yoy'].dropna().empty else 0
+    # Merge, um den Betrag vom Vorjahr in die aktuelle Zeile zu bekommen
+    df_merged = df_compare.merge(
+        df[['Monat', 'Betrag']].rename(columns={'Monat': 'monat_vj', 'Betrag': 'betrag_vj'}),
+        on='monat_vj',
+        how='left'
+    )
     
-    # PROGNOSE-ERSTELLUNG (Feld-Ansatz)
+    # 2. YoY Wachstum pro Zeile: (Ist / Vorjahr) - 1
+    df_merged['yoy'] = (df_merged['Betrag'] / df_merged['betrag_vj']) - 1
+    
+    # 3. Trend = MITTELWERT der letzten 6 verfügbaren YoY-Raten
+    growth_series = df_merged.dropna(subset=['yoy'])['yoy']
+    aktueller_trend = growth_series.tail(6).mean() if len(growth_series) >= 1 else 0
+    
+    # PROGNOSE-ERSTELLUNG (Feld-Ansatz):
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
     df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
     
-    # 3. Prognose für alle Monate: IMMER (Vorjahr des Monats * fixierter Trend)
-    def get_prog(row):
-        target_prev = row['Monat'] - pd.DateOffset(years=1)
-        prev_row = df[df['Monat'] == target_prev]
-        if not prev_row.empty:
-            # Hier nutzen wir den fixen 'aktueller_trend'
-            return prev_row['Betrag'].values[0] * (1 + aktueller_trend)
-        return None
-
-    df_total['prognose'] = df_total.apply(get_prog, axis=1)
+    # 4. Prognose für alle Monate: Vorjahresbetrag * (1 + Trend)
+    # Auch hier nutzen wir einen sauberen Datums-Match für das Vorjahr
+    df_total['monat_vj'] = df_total['Monat'] - pd.DateOffset(years=1)
+    df_total = df_total.merge(
+        df[['Monat', 'Betrag']].rename(columns={'Monat': 'monat_vj', 'Betrag': 'betrag_vj_prog'}),
+        on='monat_vj',
+        how='left'
+    )
+    df_total['prognose'] = df_total['betrag_vj_prog'] * (1 + aktueller_trend)
     
-    # Ampel-Farben (Ist vs. Prognose)
+    # Ampel-Logik
     def get_color(row):
         if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242' 
         return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
-
     df_total['farbe'] = df_total.apply(get_color, axis=1)
     
     return df_total, aktueller_trend, (last_dt, df['Betrag'].iloc[-1])
