@@ -50,7 +50,7 @@ def calculate_logic(df_db):
     df = df.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
     df['faktor'] = df['Betrag'] / df['vj_val']
     
-    # Timeline bauen
+    # Timeline
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
     df_total = df_total.merge(df[['Monat', 'Betrag', 'faktor']], on='Monat', how='left')
@@ -66,18 +66,13 @@ def calculate_logic(df_db):
     df_total['prognose'] = df_total['vj_basis'] * df_total['trend_rollierend']
     df_total['farbe'] = df_total.apply(lambda r: '#2e7d32' if r['Betrag'] >= r['prognose'] else ('#ff9800' if r['Betrag'] < r['prognose'] else '#424242'), axis=1)
     
-    # --- EXPONENTIELLE TRENDLINIE AUF BASIS DER PROGNOSE ---
-    # Wir fitten die Kurve auf die berechnete Prognose-Spalte
+    # Exponentielle Trendlinie (nur für Optik)
     df_reg = df_total.dropna(subset=['prognose']).copy()
     x = np.arange(len(df_reg))
     y = df_reg['prognose'].values
-    
-    # Exponentieller Fit: y = a * exp(b * x)  ->  log(y) = log(a) + b * x
-    # Nur positive y-Werte für log verwenden
     valid_mask = y > 0
     if np.any(valid_mask):
         coeffs = np.polyfit(x[valid_mask], np.log(y[valid_mask]), 1)
-        # Zurückrechnen auf die gesamte Timeline
         x_full = np.arange(len(df_total))
         df_total['exp_trend'] = np.exp(coeffs[1]) * np.exp(coeffs[0] * x_full)
     else:
@@ -90,6 +85,7 @@ try:
     df_res, current_trend, last_pt = calculate_logic(load_data())
     
     if not df_res.empty:
+        # Filter Buttons
         c1, c2, c3 = st.columns(3)
         if 'f' not in st.session_state: st.session_state.f = "alles"
         if c1.button("Alles", use_container_width=True): st.session_state.f = "alles"
@@ -124,27 +120,43 @@ try:
 
         # CHART
         fig = go.Figure()
-        # Prognose-Fläche
-        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['prognose'], fill='tozeroy', mode='none', fillcolor='rgba(169, 169, 169, 0.2)', hoverinfo='skip'))
         
-        # Echte Exponentielle Trendlinie (auf Prognose basierend)
+        # 1. Prognose (Graue Fläche) - jetzt mit Hover-Anzeige
+        fig.add_trace(go.Scatter(
+            x=df_p['Monat'], y=df_p['prognose'], 
+            fill='tozeroy', mode='lines', 
+            line=dict(color='rgba(0,0,0,0)'), # Linie der Fläche unsichtbar
+            fillcolor='rgba(169, 169, 169, 0.2)', 
+            name='Prognose',
+            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
+        ))
+        
+        # 2. Exponentielle Trendlinie (Nur Optik, kein Hover)
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['exp_trend'], 
             mode='lines', 
-            line=dict(color='rgba(40, 40, 40, 0.5)', width=2),
-            hovertemplate="Trend (Exp): %{y:,.2f} €<extra></extra>"
+            line=dict(color='rgba(40, 40, 40, 0.4)', width=2),
+            hoverinfo='skip' 
         ))
 
-        # Ist-Verlauf
+        # 3. Ist-Verlauf (Punkte & Linie)
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['Betrag'], 
             mode='lines+markers', 
+            name='Ist', 
             line=dict(color='#424242', width=2), 
             marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), 
             hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
         ))
 
-        fig.update_layout(separators=".,", hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), showlegend=False, yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
+        fig.update_layout(
+            separators=".,", 
+            hovermode="x unified", 
+            margin=dict(l=5, r=5, t=10, b=10), 
+            showlegend=False, 
+            yaxis=dict(title="€"), 
+            xaxis=dict(tickformat="%b %y")
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
