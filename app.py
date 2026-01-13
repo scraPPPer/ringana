@@ -52,11 +52,11 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 4. BERECHNUNGS-LOGIK ---
+# --- 4. LOGIK ---
 def calculate_all(df_hist):
     df = df_hist.sort_values('Monat').copy()
     
-    # Historische Prognose (Fläche)
+    # Historische Prognose
     df['prev_year_amount'] = df['Betrag'].shift(12)
     df['yoy_growth'] = (df['Betrag'] / df['prev_year_amount']) - 1
     current_trend = df['yoy_growth'].dropna().tail(6).mean() if not df['yoy_growth'].dropna().empty else 0
@@ -65,7 +65,7 @@ def calculate_all(df_hist):
     last_date = df['Monat'].max()
     last_amount = df['Betrag'].iloc[-1]
     
-    # Forecast-Liste (Startet strikt im Folgemonat)
+    # Forecast-Liste (Startet ohne Verbindungspunkt erst im nächsten Monat)
     future_data = []
     for i in range(1, 13):
         f_date = last_date + pd.DateOffset(months=i)
@@ -74,29 +74,20 @@ def calculate_all(df_hist):
         f_amount = prev_val.values[0] * (1 + current_trend) if not prev_val.empty else df['Betrag'].tail(6).mean()
         future_data.append({'Monat': f_date, 'Betrag': f_amount})
     
-    df_f = pd.DataFrame(future_data)
-    return df, df_f, current_trend, (last_date, last_amount)
+    return df, pd.DataFrame(future_data), current_trend, (last_date, last_amount)
 
 # --- 5. HAUPT-APP ---
 st.title("Provisions-Dashboard")
 
-# Datenerfassung mit Standarddatum Vormonat
+# Datenerfassung (Standard: Vormonat)
 with st.expander("➕ Neue Daten erfassen"):
     with st.form("input_form", clear_on_submit=True):
-        # Berechne 1. des Vormonats
         default_date = date.today().replace(day=1) - relativedelta(months=1)
         input_date = st.date_input("Monat", value=default_date)
         input_amount = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
-        
         st.markdown('<div class="main-button">', unsafe_allow_html=True)
-        submitted = st.form_submit_button("Speichern")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        if submitted:
-            supabase.table("ring_prov").upsert({
-                "Monat": input_date.strftime("%Y-%m-%d"), 
-                "Betrag": input_amount
-            }).execute()
+        if st.form_submit_button("Speichern"):
+            supabase.table("ring_prov").upsert({"Monat": input_date.strftime("%Y-%m-%d"), "Betrag": input_amount}).execute()
             st.cache_data.clear()
             st.rerun()
 
@@ -104,79 +95,7 @@ try:
     df_raw, df_future, trend_val, last_pt = calculate_all(load_data())
     
     if not df_raw.empty:
-        # Filter Buttons
+        # Filter
         col_f1, col_f2, col_f3 = st.columns(3)
         if 'filter' not in st.session_state: st.session_state.filter = "alles"
-        if col_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
-        if col_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
-        if col_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
-
-        if st.session_state.filter == "1j":
-            df_plot = df_raw[df_raw['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-        elif st.session_state.filter == "3j":
-            df_plot = df_raw[df_raw['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-        else:
-            df_plot = df_raw
-
-        sum_period = df_plot['Betrag'].sum()
-
-        # Kacheln
-        st.markdown(f"""
-            <div class="kachel-grid">
-                <div class="kachel-container"><div class="kachel-titel">Letzter Monat ({last_pt[0].strftime('%m/%y')})</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend_val*100:+.1f} %</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Forecast ({df_future['Monat'].iloc[0].strftime('%m/%y')})</div><div class="kachel-wert">{format_euro(df_future['Betrag'].iloc[0])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_raw['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Live</div></div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        # --- CHART ---
-        fig = go.Figure()
-
-        # 1. Schatten-Fläche (Nur Ist-Bereich)
-        df_area = df_plot.dropna(subset=['hist_forecast'])
-        fig.add_trace(go.Scatter(
-            x=df_area['Monat'], y=df_area['hist_forecast'],
-            fill='tozeroy', mode='none', name='Prognose',
-            fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
-        ))
-
-        # 2. Ist-Daten (Grün)
-        fig.add_trace(go.Scatter(
-            x=df_plot['Monat'], y=df_plot['Betrag'],
-            mode='lines+markers', name='Ist',
-            line=dict(color='#2e7d32', width=3), marker=dict(size=8),
-            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
-        ))
-
-        # 3. Brücke (Verbindung ohne Hover)
-        fig.add_trace(go.Scatter(
-            x=[last_pt[0], df_future['Monat'].iloc[0]],
-            y=[last_pt[1], df_future['Betrag'].iloc[0]],
-            mode='lines', name='Verbindung',
-            line=dict(color='#A9A9A9', width=3),
-            hoverinfo='skip', showlegend=False
-        ))
-
-        # 4. Forecast (Grau, Folgemonate)
-        fig.add_trace(go.Scatter(
-            x=df_future['Monat'], y=df_future['Betrag'],
-            mode='lines+markers', name='Forecast',
-            line=dict(color='#A9A9A9', width=3), marker=dict(size=8),
-            hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"
-        ))
-
-        fig.update_layout(
-            separators=".,", margin=dict(l=5, r=5, t=10, b=10),
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
-            hovermode="x unified",
-            yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
-            xaxis=dict(tickformat="%b %Y")
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-except Exception as e:
-    st.error(f"Fehler: {e}")
+        if col_f1.button("Alles", use
