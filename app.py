@@ -12,7 +12,7 @@ def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CSS (Dein bewährtes 2x3 Grid) ---
+# --- CSS (Dein 2x3 Grid) ---
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
@@ -44,7 +44,7 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. DIE NEUE "DURCHGEHENDE" LOGIK ---
+# --- 3. LOGIK (DEIN ANSATZ) ---
 def calculate_combined_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
@@ -54,24 +54,28 @@ def calculate_combined_logic(df_db):
     df['growth'] = (df['Betrag'] / df['prev_yr']) - 1
     trend = df['growth'].dropna().tail(6).mean() if not df['growth'].dropna().empty else 0
     
-    # 1. Die durchgehende "Erwartung" (Fläche) erstellen
-    # Wir nehmen alle Monate aus der DB PLUS 12 Monate Zukunft
+    # Durchgehende Zeitachse erstellen
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_combined = pd.DataFrame({'Monat': all_dates})
-    
-    # Merge Ist-Daten dazu
     df_combined = df_combined.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
     
-    # Berechne die Erwartungswerte für ALLE Monate
-    # (Vorjahr * Trend)
-    def get_expectation(row):
+    # Prognose berechnen
+    def get_prognose(row):
         target_prev = row['Monat'] - pd.DateOffset(years=1)
         prev_val = df[df['Monat'] == target_prev]['Betrag']
         if not prev_val.empty:
             return prev_val.values[0] * (1 + trend)
         return None
 
-    df_combined['erwartung'] = df_combined.apply(get_expectation, axis=1)
+    df_combined['prognose'] = df_combined.apply(get_prognose, axis=1)
+    
+    # Ampel-Farben bestimmen
+    def get_color(row):
+        if pd.isna(row['Betrag']) or pd.isna(row['prognose']):
+            return '#2e7d32' # Default Grün
+        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800' # Grün oder Orange
+
+    df_combined['punkt_farbe'] = df_combined.apply(get_color, axis=1)
     
     return df_combined, trend, (last_dt, df['Betrag'].iloc[-1])
 
@@ -100,49 +104,46 @@ try:
         if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
         if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
 
-        # Filterung für die Anzeige (nur Ist-Zeitraum für Kacheln)
-        df_ist_nur = df_total.dropna(subset=['Betrag'])
         if st.session_state.filter == "1j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-            df_prev_period = df_ist_nur[(df_ist_nur['Monat'] <= (last_pt[0] - pd.DateOffset(years=1))) & (df_ist_nur['Monat'] > (last_pt[0] - pd.DateOffset(years=2)))]
         elif st.session_state.filter == "3j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-            df_prev_period = df_ist_nur[(df_ist_nur['Monat'] <= (last_pt[0] - pd.DateOffset(years=3))) & (df_ist_nur['Monat'] > (last_pt[0] - pd.DateOffset(years=6)))]
         else:
             df_plot = df_total
-            df_prev_period = pd.DataFrame()
-
-        sum_period = df_plot['Betrag'].sum()
-        diff_val = f"{((sum_period / df_prev_period['Betrag'].sum()) - 1) * 100:+.1f} %" if not df_prev_period.empty else "--"
 
         # Kacheln
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend_val*100:+.1f} %</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['erwartung'].iloc[0])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_ist_nur['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_total.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(df_plot['Betrag'].sum())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Korrekt</div></div>
             </div>
         """, unsafe_allow_html=True)
 
         # --- CHART ---
         fig = go.Figure()
 
-        # 1. Die durchgehende graue Fläche (Erwartung/Forecast)
+        # 1. Durchgehende Fläche (Prognose)
         fig.add_trace(go.Scatter(
-            x=df_plot['Monat'], y=df_plot['erwartung'],
-            fill='tozeroy', mode='none', name='Erwartung',
+            x=df_plot['Monat'], y=df_plot['prognose'],
+            fill='tozeroy', mode='none', name='Prognose',
             fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate="Erwartung: %{y:,.2f} €<extra></extra>"
+            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
         ))
 
-        # 2. Die Ist-Werte (Grün) - nur dort, wo Daten vorhanden sind
+        # 2. Ist-Linie (Dunkelgrau mit farbigen Punkten)
         fig.add_trace(go.Scatter(
             x=df_plot['Monat'], y=df_plot['Betrag'],
             mode='lines+markers', name='Ist',
-            line=dict(color='#2e7d32', width=3), marker=dict(size=8),
+            line=dict(color='#424242', width=2), # Dunkelgraue Linie
+            marker=dict(
+                size=10, 
+                color=df_plot['punkt_farbe'], # Dynamische Farbe
+                line=dict(width=1, color='white')
+            ),
             hovertemplate="Ist: %{y:,.2f} €<extra></extra>",
             connectgaps=False
         ))
