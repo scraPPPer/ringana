@@ -6,7 +6,7 @@ from supabase import create_client, Client
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
-# --- 1. SETUP & ICON-LOGIK ---
+# --- 1. SETUP & ICON-LOGIK (MUSS GANZ OBEN STEHEN) ---
 LOGO_URL = "https://cqaqvfybmwguskhfwgkw.supabase.co/storage/v1/object/public/mypublic/ringana_logo_favicon.png"
 
 st.set_page_config(
@@ -15,12 +15,15 @@ st.set_page_config(
     layout="centered"
 )
 
-# CSS & Header für Web-App Icon
-# Fehlerbehebung: f-string Syntax korrigiert durch Trennung der geschweiften Klammern
+# Erweiterter Header für iOS/Safari Homescreen Support
 st.markdown(f"""
     <head>
-        <link rel="apple-touch-icon" href="{LOGO_URL}">
-        <link rel="icon" href="{LOGO_URL}">
+        <link rel="apple-touch-icon" sizes="180x180" href="{LOGO_URL}">
+        <link rel="icon" type="image/png" sizes="32x32" href="{LOGO_URL}">
+        <link rel="mask-icon" href="{LOGO_URL}" color="#2e7d32">
+        <meta name="apple-mobile-web-app-title" content="friedels">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="default">
     </head>
     <style>
     h1 {{ font-size: 1.6rem !important; margin-bottom: 0.5rem; }}
@@ -71,7 +74,6 @@ def calculate_logic(df_db):
     df_total['trend_rollierend'] = df_total['faktor'].shift(1).rolling(window=6, min_periods=1).mean()
     last_known_trend = df_total['trend_rollierend'].dropna().iloc[-1]
     df_total['trend_rollierend'] = df_total['trend_rollierend'].fillna(last_known_trend)
-    
     df_total['prognose'] = df_total['vj_basis'] * df_total['trend_rollierend']
     df_total['farbe'] = df_total.apply(lambda r: '#2e7d32' if r['Betrag'] >= r['prognose'] else ('#ff9800' if r['Betrag'] < r['prognose'] else '#424242'), axis=1)
     
@@ -128,43 +130,11 @@ try:
 
         # CHART
         fig = go.Figure()
-        
-        # 1. Prognose (Graue Fläche)
-        fig.add_trace(go.Scatter(
-            x=df_p['Monat'], y=df_p['prognose'], 
-            fill='tozeroy', mode='lines', 
-            line=dict(color='rgba(0,0,0,0)'), 
-            fillcolor='rgba(169, 169, 169, 0.2)', 
-            name='Prognose',
-            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
-        ))
-        
-        # 2. Trendlinie
-        fig.add_trace(go.Scatter(
-            x=df_p['Monat'], y=df_p['exp_trend'], 
-            mode='lines', 
-            line=dict(color='rgba(40, 40, 40, 0.4)', width=2),
-            hoverinfo='skip' 
-        ))
+        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['prognose'], fill='tozeroy', mode='lines', line=dict(color='rgba(0,0,0,0)'), fillcolor='rgba(169, 169, 169, 0.2)', name='Prognose', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
+        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['exp_trend'], mode='lines', line=dict(color='rgba(40, 40, 40, 0.4)', width=2), hoverinfo='skip'))
+        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>"))
 
-        # 3. Ist-Verlauf
-        fig.add_trace(go.Scatter(
-            x=df_p['Monat'], y=df_p['Betrag'], 
-            mode='lines+markers', 
-            name='Ist', 
-            line=dict(color='#424242', width=2), 
-            marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), 
-            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
-        ))
-
-        fig.update_layout(
-            separators=".,", 
-            hovermode="x unified", 
-            margin=dict(l=5, r=5, t=10, b=10), 
-            showlegend=False, 
-            yaxis=dict(title="€"), 
-            xaxis=dict(tickformat="%b %y")
-        )
+        fig.update_layout(separators=".,", hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), showlegend=False, yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
