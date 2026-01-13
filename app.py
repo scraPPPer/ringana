@@ -6,7 +6,7 @@ from supabase import create_client, Client
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
-# --- 1. SETUP & ICON-LOGIK (MUSS GANZ OBEN STEHEN) ---
+# --- 1. SETUP & ICON-LOGIK ---
 LOGO_URL = "https://cqaqvfybmwguskhfwgkw.supabase.co/storage/v1/object/public/mypublic/ringana_logo_favicon.png"
 
 st.set_page_config(
@@ -15,15 +15,10 @@ st.set_page_config(
     layout="centered"
 )
 
-# Erweiterter Header für iOS/Safari Homescreen Support
 st.markdown(f"""
     <head>
-        <link rel="apple-touch-icon" sizes="180x180" href="{LOGO_URL}">
-        <link rel="icon" type="image/png" sizes="32x32" href="{LOGO_URL}">
-        <link rel="mask-icon" href="{LOGO_URL}" color="#2e7d32">
-        <meta name="apple-mobile-web-app-title" content="friedels">
-        <meta name="apple-mobile-web-app-capable" content="yes">
-        <meta name="apple-mobile-web-app-status-bar-style" content="default">
+        <link rel="apple-touch-icon" href="{LOGO_URL}">
+        <link rel="icon" href="{LOGO_URL}">
     </head>
     <style>
     h1 {{ font-size: 1.6rem !important; margin-bottom: 0.5rem; }}
@@ -32,7 +27,7 @@ st.markdown(f"""
         background-color: #f0f2f6; border-radius: 10px; padding: 12px 5px;
         text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%;
         box-sizing: border-box; margin-bottom: 5px;
-    }}
+    }
     .kachel-titel {{ font-size: 0.75rem; color: #5f6368; }}
     .kachel-wert {{ font-size: 1.1rem; font-weight: bold; color: #2e7d32; }}
     </style>
@@ -74,6 +69,7 @@ def calculate_logic(df_db):
     df_total['trend_rollierend'] = df_total['faktor'].shift(1).rolling(window=6, min_periods=1).mean()
     last_known_trend = df_total['trend_rollierend'].dropna().iloc[-1]
     df_total['trend_rollierend'] = df_total['trend_rollierend'].fillna(last_known_trend)
+    
     df_total['prognose'] = df_total['vj_basis'] * df_total['trend_rollierend']
     df_total['farbe'] = df_total.apply(lambda r: '#2e7d32' if r['Betrag'] >= r['prognose'] else ('#ff9800' if r['Betrag'] < r['prognose'] else '#424242'), axis=1)
     
@@ -103,38 +99,81 @@ try:
         if c2.button("1 Zeitjahr", use_container_width=True): st.session_state.f = "1j"
         if c3.button("3 Zeitjahre", use_container_width=True): st.session_state.f = "3j"
 
-        df_p = df_res.copy()
+        df_p = df_res.copy()      # Für den Graphen
+        df_kacheln = df_res.copy() # Für die Kacheln
         diff_val = "--"
         
         if st.session_state.f == "1j":
-            df_p = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-            sum_curr = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=1))) & (df_res['Monat'] <= last_pt[0])]['Betrag'].sum()
+            # Graphen-Zeitraum: 12 Monate + der Monat davor (13 Monate gesamt)
+            df_p = df_res[df_res['Monat'] >= (last_pt[0] - pd.DateOffset(years=1))]
+            # Kachel-Zeitraum: Exakt die letzten 12 Monate
+            df_kacheln = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            
+            sum_curr = df_kacheln['Betrag'].sum()
             sum_prev = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=2))) & (df_res['Monat'] <= (last_pt[0] - pd.DateOffset(years=1)))]['Betrag'].sum()
             if sum_prev > 0: diff_val = f"{((sum_curr / sum_prev) - 1) * 100:+.1f} %"
+            
         elif st.session_state.f == "3j":
-            df_p = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-            sum_curr = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=3))) & (df_res['Monat'] <= last_pt[0])]['Betrag'].sum()
+            # Graphen-Zeitraum: 36 Monate + der Monat davor (37 Monate gesamt)
+            df_p = df_res[df_res['Monat'] >= (last_pt[0] - pd.DateOffset(years=3))]
+            # Kachel-Zeitraum: Exakt die letzten 36 Monate
+            df_kacheln = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            
+            sum_curr = df_kacheln['Betrag'].sum()
             sum_prev = df_res[(df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=6))) & (df_res['Monat'] <= (last_pt[0] - pd.DateOffset(years=3)))]['Betrag'].sum()
             if sum_prev > 0: diff_val = f"{((sum_curr / sum_prev) - 1) * 100:+.1f} %"
 
+        # Kacheln (basierend auf df_kacheln)
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{(current_trend-1)*100:+.1f} %</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_res[df_res['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_res.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(df_p['Betrag'].sum())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(df_kacheln['Betrag'].sum())}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
             </div>
         """, unsafe_allow_html=True)
 
-        # CHART
+        # CHART (basierend auf df_p)
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['prognose'], fill='tozeroy', mode='lines', line=dict(color='rgba(0,0,0,0)'), fillcolor='rgba(169, 169, 169, 0.2)', name='Prognose', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
-        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['exp_trend'], mode='lines', line=dict(color='rgba(40, 40, 40, 0.4)', width=2), hoverinfo='skip'))
-        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>"))
+        
+        # 1. Prognose (Graue Fläche)
+        fig.add_trace(go.Scatter(
+            x=df_p['Monat'], y=df_p['prognose'], 
+            fill='tozeroy', mode='lines', 
+            line=dict(color='rgba(0,0,0,0)'), 
+            fillcolor='rgba(169, 169, 169, 0.2)', 
+            name='Prognose',
+            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
+        ))
+        
+        # 2. Trendlinie
+        fig.add_trace(go.Scatter(
+            x=df_p['Monat'], y=df_p['exp_trend'], 
+            mode='lines', 
+            line=dict(color='rgba(40, 40, 40, 0.4)', width=2),
+            hoverinfo='skip' 
+        ))
 
-        fig.update_layout(separators=".,", hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), showlegend=False, yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
+        # 3. Ist-Verlauf
+        fig.add_trace(go.Scatter(
+            x=df_p['Monat'], y=df_p['Betrag'], 
+            mode='lines+markers', 
+            name='Ist', 
+            line=dict(color='#424242', width=2), 
+            marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), 
+            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
+        ))
+
+        fig.update_layout(
+            separators=".,", 
+            hovermode="x unified", 
+            margin=dict(l=5, r=5, t=10, b=10), 
+            showlegend=False, 
+            yaxis=dict(title="€"), 
+            xaxis=dict(tickformat="%b %y")
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
