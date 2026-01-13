@@ -69,6 +69,7 @@ def calculate_all_forecasts(df_historical):
     last_date, last_amount = last_row['Monat'], last_row['Betrag']
     
     future_list = []
+    # Forecast startet erst im Folgemonat des letzten Ist-Wertes
     for i in range(1, 13):
         f_month = last_date + pd.DateOffset(months=i)
         target_prev_year = f_month - pd.DateOffset(years=1)
@@ -81,7 +82,6 @@ def calculate_all_forecasts(df_historical):
 # --- 5. HAUPT-APP ---
 st.title("Provisions-Dashboard")
 
-# Datenerfassung
 with st.expander("➕ Neue Daten erfassen"):
     with st.form("input_form", clear_on_submit=True):
         input_date = st.date_input("Monat", value=datetime.now().replace(day=1))
@@ -106,7 +106,6 @@ try:
         if col_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
         if col_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
 
-        # Filter Logik
         last_month = df_raw_all['Monat'].max()
         if st.session_state.filter == "1j":
             start_date = last_month - pd.DateOffset(years=1)
@@ -123,7 +122,7 @@ try:
         sum_period = df_filtered['Betrag'].sum()
         diff_val = f"{((sum_period / df_prev_period['Betrag'].sum()) - 1) * 100:+.1f} %" if not df_prev_period.empty else "--"
 
-        # --- GRID AUSGABE (6 Kacheln) ---
+        # --- GRID AUSGABE ---
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container">
@@ -173,7 +172,7 @@ try:
             hovertemplate=h_temp
         ))
 
-        # 3. Verbindungslinie (Grau, ohne Hover)
+        # 3. Verbindungslinie (Grau, ohne Marker, OHNE Hover)
         fig.add_trace(go.Scatter(
             x=[last_point[0], df_future['Monat'].iloc[0]],
             y=[last_point[1], df_future['Betrag'].iloc[0]],
@@ -182,7 +181,7 @@ try:
             hoverinfo='skip', showlegend=False
         ))
 
-        # 4. Forecast-Daten (Grau, mit Hover)
+        # 4. Forecast-Daten (Grau, startet erst im Monat NACH dem letzten Ist)
         fig.add_trace(go.Scatter(
             x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
