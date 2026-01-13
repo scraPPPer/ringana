@@ -5,14 +5,13 @@ from supabase import create_client, Client
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
-# --- 1. KONFIGURATION ---
+# --- 1. SETUP ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
 def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CSS ---
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
@@ -24,135 +23,106 @@ st.markdown("""
     }
     .kachel-titel { font-size: 0.75rem; color: #5f6368; }
     .kachel-wert { font-size: 1.1rem; font-weight: bold; color: #2e7d32; }
-    .stButton>button { border-radius: 20px; font-size: 0.8rem; }
     .calc-box { background-color: #fff; border: 1px solid #ddd; padding: 15px; border-radius: 10px; margin-top: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. VERBINDUNG ---
+# --- 2. DATEN ---
 @st.cache_resource
 def init_connection():
     return create_client(st.secrets["supabase_url"], st.secrets["supabase_key"])
 
-supabase = init_connection()
-
 def load_data():
-    res = supabase.table("ring_prov").select("*").order("Monat").execute()
+    res = init_connection().table("ring_prov").select("*").order("Monat").execute()
     if not res.data: return pd.DataFrame()
     df = pd.DataFrame(res.data)
     df['Monat'] = pd.to_datetime(df['Monat'])
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. LOGIK ---
+# --- 3. ROLLIERENDE LOGIK ---
 def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # 1. Vorjahres-Match
+    # Vorjahres-Match für Wachstumsraten
     df['vj_monat'] = df['Monat'] - pd.DateOffset(years=1)
     df = df.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
+    df['faktor'] = df['Betrag'] / df['vj_val']
     
-    # 2. Faktor berechnen
-    df['yoy_factor'] = df['Betrag'] / df['vj_val']
-    
-    # 3. Trend aus den letzten 6 verfügbaren Faktoren
-    debug_df = df.dropna(subset=['yoy_factor']).tail(6).copy()
-    avg_trend = debug_df['yoy_factor'].mean() if not debug_df.empty else 1.0
-    
-    # 4. Prognose-Zeitachse
+    # Zeitachse (Ist + 12 Monate Zukunft)
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
-    df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
-    df_total['vj_monat'] = df_total['Monat'] - pd.DateOffset(years=1)
-    df_total = df_total.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_prog_basis'}), on='vj_monat', how='left')
     
-    # Prognose berechnen (nur dort, wo kein Ist-Wert ist)
-    df_total['prognose'] = df_total['vj_prog_basis'] * avg_trend
+    # Ist-Werte und Faktoren in die Gesamt-Timeline bringen
+    df_total = df_total.merge(df[['Monat', 'Betrag', 'faktor']], on='Monat', how='left')
     
-    # 5. Farben
-    def get_color(row):
-        if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242'
-        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
-    df_total['farbe'] = df_total.apply(get_color, axis=1)
+    # Vorjahresbasis für JEDEN Monat der Timeline (für die Prognose-Rechnung)
+    df_total['vj_monat_prog'] = df_total['Monat'] - pd.DateOffset(years=1)
+    df_total = df_total.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat_prog', 'Betrag': 'vj_basis'}), on='vj_monat_prog', how='left')
     
-    return df_total, avg_trend, (last_dt, df['Betrag'].iloc[-1]), debug_df
+    # ROLLIERENDER TREND:
+    # Wir nehmen für jeden Monat den Durchschnitt der Faktoren der 6 Monate DAVOR.
+    # 'min_periods=1' stellt sicher, dass wir auch am Anfang der Datenreihe Werte bekommen.
+    df_total['trend_rollierend'] = df_total['faktor'].shift(1).rolling(window=6, min_periods=1).mean()
+    
+    # In der fernen Zukunft (wenn shift(1) leer wird) füllen wir mit dem letzten bekannten Trend auf
+    last_known_trend = df_total['trend_rollierend'].dropna().iloc[-1]
+    df_total['trend_rollierend'] = df_total['trend_rollierend'].fillna(last_known_trend)
+    
+    # PROGNOSE-BERECHNUNG: Vorjahresbasis * rollierender Trend
+    df_total['prognose'] = df_total['vj_basis'] * df_total['trend_rollierend']
+    
+    # Ampel
+    df_total['farbe'] = df_total.apply(lambda r: '#2e7d32' if r['Betrag'] >= r['prognose'] else ('#ff9800' if r['Betrag'] < r['prognose'] else '#424242'), axis=1)
+    
+    return df_total, last_known_trend, (last_dt, df['Betrag'].iloc[-1]), df.dropna(subset=['faktor']).tail(6)
 
 # --- 4. APP ---
-st.title("Provisions-Dashboard")
-
 try:
-    df_total, trend_val, last_pt, debug_df = calculate_logic(load_data())
+    df_res, current_trend, last_pt, debug_df = calculate_logic(load_data())
     
-    if not df_total.empty:
-        # Filter Buttons
-        c_f1, c_f2, c_f3 = st.columns(3)
-        if 'filter' not in st.session_state: st.session_state.filter = "alles"
-        if c_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
-        if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
-        if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
+    if not df_res.empty:
+        # Filter (Alles / 1J / 3J)
+        c1, c2, c3 = st.columns(3)
+        if 'f' not in st.session_state: st.session_state.f = "alles"
+        if c1.button("Alles", use_container_width=True): st.session_state.f = "alles"
+        if c2.button("1 Zeitjahr", use_container_width=True): st.session_state.f = "1j"
+        if c3.button("3 Zeitjahre", use_container_width=True): st.session_state.f = "3j"
 
-        # Zeitraum-Filterung
-        if st.session_state.filter == "1j":
-            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
-            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=2), last_pt[0] - pd.DateOffset(years=1)
-        elif st.session_state.filter == "3j":
-            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
-            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=6), last_pt[0] - pd.DateOffset(years=3)
-        else:
-            df_plot = df_total
-            start_prev, end_prev = None, None
-
-        sum_period = df_plot['Betrag'].sum()
-        diff_val = "--"
-        if start_prev:
-            sum_prev = df_total[(df_total['Monat'] > start_prev) & (df_total['Monat'] <= end_prev)]['Betrag'].sum()
-            if sum_prev > 0:
-                diff_val = f"{((sum_period / sum_prev) - 1) * 100:+.1f} %"
+        df_p = df_res.copy()
+        if st.session_state.f == "1j": df_p = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+        elif st.session_state.f == "3j": df_p = df_res[df_res['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
 
         # Kacheln
-        forecast_next = df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0]
+        forecast_next = df_res[df_res['Monat'] > last_pt[0]]['prognose'].iloc[0]
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Wachstumsfaktor (Ø 6M)</div><div class="kachel-wert">{trend_val:.4f}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Aktueller Trend (Ø 6M)</div><div class="kachel-wert">{current_trend:.4f}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(forecast_next)}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_total.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_res.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe (Anzeige)</div><div class="kachel-wert">{format_euro(df_p['Betrag'].sum())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Modus</div><div class="kachel-wert">Dynamisch</div></div>
             </div>
         """, unsafe_allow_html=True)
 
-        # CHART
+        # Chart
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
-        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_plot['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>", connectgaps=False))
-        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
+        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
+        fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>"))
+        fig.update_layout(hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- DETAILLIERTE BERECHNUNG UNTER DER GRAFIK ---
-        st.subheader("Details zur nächsten Prognose")
+        # --- TRANSPARENZ ---
+        st.subheader("Berechnung der nächsten Prognose")
+        st.table(debug_df[['Monat', 'Betrag', 'vj_val', 'faktor']].rename(columns={'vj_val': 'Vorjahr', 'faktor': 'Rate'}).style.format({'Betrag': '{:,.2f} €', 'Vorjahr': '{:,.2f} €', 'Rate': '{:.4f}'}))
         
-        # 1. Die 6 herangezogenen Monate
-        st.write("Die letzten 6 Wachstumsraten (Ist / Vorjahr):")
-        st.table(debug_df[['Monat', 'Betrag', 'vj_val', 'yoy_factor']].rename(columns={
-            'Betrag': 'Ist-Wert',
-            'vj_val': 'Vorjahresmonat',
-            'yoy_factor': 'Wachstumsrate'
-        }).style.format({'Ist-Wert': '{:,.2f} €', 'Vorjahresmonat': '{:,.2f} €', 'Wachstumsrate': '{:.4f}'}))
-
-        # 2. Die finale Rechnung
-        next_month = (last_pt[0] + pd.DateOffset(months=1))
-        vj_basis = df_total[df_total['Monat'] == next_month]['vj_prog_basis'].values[0]
-        
+        next_date = (last_pt[0] + pd.DateOffset(months=1))
+        vj_basis = df_res[df_res['Monat'] == next_date]['vj_basis'].values[0]
         st.markdown(f"""
         <div class="calc-box">
-            <strong>Rechnung für {next_month.strftime('%B %Y')}:</strong><br>
-            Durchschnittliche Wachstumsrate (Ø von oben): <b>{trend_val:.4f}</b><br>
-            Multipliziert mit Vorjahresmonat ({ (next_month - pd.DateOffset(years=1)).strftime('%B %Y') }): <b>{format_euro(vj_basis)}</b><br><br>
-            <span style="font-size: 1.2rem; color: #2e7d32;">
-                = Prognose: <b>{format_euro(forecast_next)}</b>
-            </span>
+            <b>{next_date.strftime('%B %Y')}:</b> Trend {current_trend:.4f} × Vorjahr {format_euro(vj_basis)} = <b>{format_euro(forecast_next)}</b>
         </div>
         """, unsafe_allow_html=True)
 
