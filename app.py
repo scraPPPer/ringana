@@ -98,4 +98,68 @@ try:
         # Filter
         col_f1, col_f2, col_f3 = st.columns(3)
         if 'filter' not in st.session_state: st.session_state.filter = "alles"
-        if col_f1.button("Alles", use
+        if col_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
+        if col_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
+        if col_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
+
+        if st.session_state.filter == "1j":
+            df_plot = df_raw[df_raw['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+        elif st.session_state.filter == "3j":
+            df_plot = df_raw[df_raw['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+        else:
+            df_plot = df_raw
+
+        sum_period = df_plot['Betrag'].sum()
+
+        # Kacheln
+        st.markdown(f"""
+            <div class="kachel-grid">
+                <div class="kachel-container"><div class="kachel-titel">Letzter Monat ({last_pt[0].strftime('%m/%y')})</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend_val*100:+.1f} %</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Forecast ({df_future['Monat'].iloc[0].strftime('%m/%y')})</div><div class="kachel-wert">{format_euro(df_future['Betrag'].iloc[0])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_raw['Betrag'].tail(12).mean())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Analysiert</div></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # --- CHART ---
+        fig = go.Figure()
+
+        # 1. Schatten-Fläche (Nur Ist-Bereich)
+        df_area = df_plot.dropna(subset=['hist_forecast'])
+        fig.add_trace(go.Scatter(
+            x=df_area['Monat'], y=df_area['hist_forecast'],
+            fill='tozeroy', mode='none', name='Prognose',
+            fillcolor='rgba(169, 169, 169, 0.15)',
+            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
+        ))
+
+        # 2. Ist-Daten (Grün) - Endet hart beim letzten DB-Eintrag
+        fig.add_trace(go.Scatter(
+            x=df_plot['Monat'], y=df_plot['Betrag'],
+            mode='lines+markers', name='Ist',
+            line=dict(color='#2e7d32', width=3), marker=dict(size=8),
+            hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
+        ))
+
+        # 3. Forecast (Grau) - Startet erst im Monat NACH dem letzten DB-Eintrag
+        # Da KEINE Verbindungslinie existiert, kann Plotly hier nichts vermischen
+        fig.add_trace(go.Scatter(
+            x=df_future['Monat'], y=df_future['Betrag'],
+            mode='lines+markers', name='Forecast',
+            line=dict(color='#A9A9A9', width=3, dash='dot'), marker=dict(size=8, symbol='circle-open'),
+            hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"
+        ))
+
+        fig.update_layout(
+            separators=".,", margin=dict(l=5, r=5, t=10, b=10),
+            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
+            hovermode="x unified",
+            yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
+            xaxis=dict(tickformat="%b %Y")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+except Exception as e:
+    st.error(f"Fehler: {e}")
