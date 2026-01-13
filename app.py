@@ -1,107 +1,153 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from supabase import create_client
-from datetime import date
+from supabase import create_client, Client
+from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 
-# --- 1. SETUP & DESIGN ---
+# --- 1. KONFIGURATION ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
+def format_euro(val):
+    if pd.isna(val) or val == 0: return "0,00 €"
+    return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
+
+# --- CSS ---
 st.markdown("""
     <style>
-    .kachel-grid { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+    h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
+    .kachel-grid { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin-bottom: 20px; }
     .kachel-container {
         background-color: #f0f2f6; border-radius: 10px; padding: 12px 5px;
-        text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%; margin-bottom: 5px;
+        text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%;
+        box-sizing: border-box; margin-bottom: 5px;
     }
     .kachel-titel { font-size: 0.75rem; color: #5f6368; }
     .kachel-wert { font-size: 1.1rem; font-weight: bold; color: #2e7d32; }
+    .stButton>button { border-radius: 20px; font-size: 0.8rem; }
+    .main-button>button { background-color: #2e7d32 !important; color: white !important; font-weight: bold; height: 3em; }
+    .debug-text { font-size: 0.8rem; color: #666; font-family: monospace; background: #f9f9f9; padding: 10px; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
-def format_euro(val):
-    return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(val) else "0,00 €"
-
-# --- 2. DATEN LADEN & BERECHNEN ---
+# --- 2. VERBINDUNG ---
 @st.cache_resource
 def init_connection():
     return create_client(st.secrets["supabase_url"], st.secrets["supabase_key"])
 
-def get_data():
-    data = init_connection().table("ring_prov").select("*").order("Monat").execute().data
-    df = pd.DataFrame(data)
+supabase = init_connection()
+
+def load_data():
+    res = supabase.table("ring_prov").select("*").order("Monat").execute()
+    if not res.data: return pd.DataFrame()
+    df = pd.DataFrame(res.data)
     df['Monat'] = pd.to_datetime(df['Monat'])
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-try:
-    df_raw = get_data()
-    last_date = df_raw['Monat'].max()
-
-    # Trend-Logik (Mittelwert der letzten 6 Faktoren: Ist / Vorjahr)
-    df_calc = df_raw.copy()
-    df_calc['vj_monat'] = df_calc['Monat'] - pd.DateOffset(years=1)
-    df_calc = df_calc.merge(df_raw[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
-    df_calc['faktor'] = df_calc['Betrag'] / df_calc['vj_val']
-    trend = df_calc['faktor'].dropna().tail(6).mean()
-
-    # Gesamt-Timeline (Ist + 12 Monate Zukunft)
-    all_dates = pd.date_range(start=df_raw['Monat'].min(), end=last_date + pd.DateOffset(months=12), freq='MS')
-    df_all = pd.DataFrame({'Monat': all_dates})
-    df_all = df_all.merge(df_raw[['Monat', 'Betrag']], on='Monat', how='left')
-    df_all['vj_monat'] = df_all['Monat'] - pd.DateOffset(years=1)
-    df_all = df_all.merge(df_raw[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
-    df_all['prognose'] = df_all['vj_val'] * trend
-
-    # --- 3. FILTER-STEUERUNG ---
-    if 'filter' not in st.session_state: st.session_state.filter = "alles"
-    col1, col2, col3 = st.columns(3)
-    if col1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
-    if col2.button("1 Jahr", use_container_width=True): st.session_state.filter = "1j"
-    if col3.button("3 Jahre", use_container_width=True): st.session_state.filter = "3j"
-
-    # Zeiträume definieren
-    df_plot = df_all.copy()
-    sum_curr, sum_prev = 0, 0
-    diff_text = "--"
-
-    if st.session_state.filter == "1j":
-        df_plot = df_all[df_all['Monat'] > (last_date - pd.DateOffset(years=1))]
-        sum_curr = df_all[(df_all['Monat'] > (last_date - pd.DateOffset(years=1))) & (df_all['Monat'] <= last_date)]['Betrag'].sum()
-        sum_prev = df_all[(df_all['Monat'] > (last_date - pd.DateOffset(years=2))) & (df_all['Monat'] <= (last_date - pd.DateOffset(years=1)))]['Betrag'].sum()
-    elif st.session_state.filter == "3j":
-        df_plot = df_all[df_all['Monat'] > (last_date - pd.DateOffset(years=3))]
-        sum_curr = df_all[(df_all['Monat'] > (last_date - pd.DateOffset(years=3))) & (df_all['Monat'] <= last_date)]['Betrag'].sum()
-        sum_prev = df_all[(df_all['Monat'] > (last_date - pd.DateOffset(years=6))) & (df_all['Monat'] <= (last_date - pd.DateOffset(years=3)))]['Betrag'].sum()
-    else:
-        sum_curr = df_all['Betrag'].sum()
-
-    if sum_prev > 0:
-        diff_text = f"{((sum_curr / sum_prev) - 1) * 100:+.1f} %"
-
-    # --- 4. ANZEIGE ---
-    st.markdown(f"""
-        <div class="kachel-grid">
-            <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(df_raw['Betrag'].iloc[-1])}</div></div>
-            <div class="kachel-container"><div class="kachel-titel">Trend-Faktor</div><div class="kachel-wert">{trend:.3f}</div></div>
-            <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_all[df_all['Monat']>last_date]['prognose'].iloc[0])}</div></div>
-            <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_raw['Betrag'].tail(12).mean())}</div></div>
-            <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(sum_curr)}</div></div>
-            <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_text}</div></div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Chart
-    fig = go.Figure()
-    # Prognose-Fläche
-    fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)'))
-    # Ist-Linie + Ampel
-    colors = ['#2e7d32' if i >= p else '#ff9800' for i, p in zip(df_plot['Betrag'], df_plot['prognose'])]
-    fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=9, color=colors, line=dict(width=1, color='white'))))
+# --- 3. LOGIK ---
+def calculate_logic(df_db):
+    df = df_db.sort_values('Monat').copy()
+    last_dt = df['Monat'].max()
     
-    fig.update_layout(hovermode="x unified", margin=dict(l=10, r=10, t=10, b=10), yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
-    st.plotly_chart(fig, use_container_width=True)
+    # Sicherer Vorjahres-Match (SVERWEIS-Prinzip)
+    df['vj_monat'] = df['Monat'] - pd.DateOffset(years=1)
+    df = df.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
+    
+    # Faktor (Ist / Vorjahr)
+    df['yoy_factor'] = df['Betrag'] / df['vj_val']
+    
+    # Die letzten 6 verfügbaren Faktoren für die Transparenz-Tabelle
+    debug_df = df.dropna(subset=['yoy_factor']).tail(6).copy()
+    trend_faktor = debug_df['yoy_factor'].mean() if not debug_df.empty else 1.0
+    
+    # Zeitachse (Feld-Ansatz)
+    all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
+    df_total = pd.DataFrame({'Monat': all_dates})
+    df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
+    
+    # Prognose für alle Monate (VJ * Trend)
+    df_total['vj_monat'] = df_total['Monat'] - pd.DateOffset(years=1)
+    df_total = df_total.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_prog_basis'}), on='vj_monat', how='left')
+    df_total['prognose'] = df_total['vj_prog_basis'] * trend_faktor
+    
+    # Farbe für Punkte
+    def get_color(row):
+        if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242'
+        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
+    df_total['farbe'] = df_total.apply(get_color, axis=1)
+    
+    return df_total, trend_faktor, (last_dt, df['Betrag'].iloc[-1]), debug_df
+
+# --- 4. APP ---
+st.title("Provisions-Dashboard")
+
+with st.expander("➕ Neue Daten erfassen"):
+    with st.form("input", clear_on_submit=True):
+        d_val = date.today().replace(day=1) - relativedelta(months=1)
+        i_date = st.date_input("Monat", value=d_val)
+        i_amt = st.number_input("Betrag in €", min_value=0.0, format="%.2f")
+        if st.form_submit_button("Speichern"):
+            supabase.table("ring_prov").upsert({"Monat": i_date.strftime("%Y-%m-%d"), "Betrag": i_amt}).execute()
+            st.cache_data.clear()
+            st.rerun()
+
+try:
+    df_total, trend_val, last_pt, debug_info = calculate_logic(load_data())
+    
+    if not df_total.empty:
+        # Filter Buttons
+        c_f1, c_f2, c_f3 = st.columns(3)
+        if 'filter' not in st.session_state: st.session_state.filter = "alles"
+        if c_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
+        if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
+        if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
+
+        # Filter-Logik
+        if st.session_state.filter == "1j":
+            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=2), last_pt[0] - pd.DateOffset(years=1)
+        elif st.session_state.filter == "3j":
+            df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            start_prev, end_prev = last_pt[0] - pd.DateOffset(years=6), last_pt[0] - pd.DateOffset(years=3)
+        else:
+            df_plot = df_total
+            start_prev, end_prev = None, None
+
+        sum_period = df_plot['Betrag'].sum()
+        diff_val = "--"
+        if start_prev:
+            sum_prev = df_total[(df_total['Monat'] > start_prev) & (df_total['Monat'] <= end_prev)]['Betrag'].sum()
+            if sum_prev > 0:
+                diff_val = f"{((sum_period / sum_prev) - 1) * 100:+.1f} %"
+
+        # Kacheln
+        st.markdown(f"""
+            <div class="kachel-grid">
+                <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Wachstumsfaktor (Ø 6M)</div><div class="kachel-wert">{trend_val:.3f}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_total.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # CHART
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_plot['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>", connectgaps=False))
+        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- TRANSPARENZ-TABELLE ---
+        with st.expander("📊 Berechnungsgrundlage (Trend) einsehen"):
+            st.write(f"Durchschnittlicher Faktor: **{trend_val:.4f}** (Basis für alle Prognosen)")
+            st.table(debug_info[['Monat', 'Betrag', 'betrag_vj', 'yoy_factor']].rename(columns={
+                'betrag_vj': 'Vorjahr',
+                'yoy_factor': 'Faktor (Ist/VJ)'
+            }).style.format({'Betrag': '{:,.2f} €', 'Vorjahr': '{:,.2f} €', 'Faktor (Ist/VJ)': '{:.4f}'}))
 
 except Exception as e:
     st.error(f"Fehler: {e}")
+    
