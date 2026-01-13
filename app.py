@@ -45,12 +45,12 @@ def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # Faktor-Match
+    # Vorjahres-Match
     df['vj_monat'] = df['Monat'] - pd.DateOffset(years=1)
     df = df.merge(df[['Monat', 'Betrag']].rename(columns={'Monat': 'vj_monat', 'Betrag': 'vj_val'}), on='vj_monat', how='left')
     df['faktor'] = df['Betrag'] / df['vj_val']
     
-    # Timeline
+    # Timeline bauen
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
     df_total = pd.DataFrame({'Monat': all_dates})
     df_total = df_total.merge(df[['Monat', 'Betrag', 'faktor']], on='Monat', how='left')
@@ -66,20 +66,22 @@ def calculate_logic(df_db):
     df_total['prognose'] = df_total['vj_basis'] * df_total['trend_rollierend']
     df_total['farbe'] = df_total.apply(lambda r: '#2e7d32' if r['Betrag'] >= r['prognose'] else ('#ff9800' if r['Betrag'] < r['prognose'] else '#424242'), axis=1)
     
-    # --- LOGARITHMISCHE TRENDLINIE BERECHNEN ---
-    # Wir nehmen nur vorhandene Ist-Werte für die Regression
-    df_reg = df_total.dropna(subset=['Betrag']).copy()
-    # x-Werte als fortlaufende Zahlen (0, 1, 2...)
-    x = np.arange(len(df_reg)) + 1 # +1 um log(0) zu vermeiden
-    y = df_reg['Betrag'].values
+    # --- EXPONENTIELLE TRENDLINIE AUF BASIS DER PROGNOSE ---
+    # Wir fitten die Kurve auf die berechnete Prognose-Spalte
+    df_reg = df_total.dropna(subset=['prognose']).copy()
+    x = np.arange(len(df_reg))
+    y = df_reg['prognose'].values
     
-    # Logarithmische Regression: y = a * log(x) + b
-    # Wir fitten ein Polynom 1. Grades auf log(x)
-    coeffs = np.polyfit(np.log(x), y, 1)
-    
-    # Den Trend auf die gesamte Zeitachse anwenden (df_total)
-    x_full = np.arange(len(df_total)) + 1
-    df_total['log_trend'] = coeffs[0] * np.log(x_full) + coeffs[1]
+    # Exponentieller Fit: y = a * exp(b * x)  ->  log(y) = log(a) + b * x
+    # Nur positive y-Werte für log verwenden
+    valid_mask = y > 0
+    if np.any(valid_mask):
+        coeffs = np.polyfit(x[valid_mask], np.log(y[valid_mask]), 1)
+        # Zurückrechnen auf die gesamte Timeline
+        x_full = np.arange(len(df_total))
+        df_total['exp_trend'] = np.exp(coeffs[1]) * np.exp(coeffs[0] * x_full)
+    else:
+        df_total['exp_trend'] = None
     
     return df_total, last_known_trend, (last_dt, df['Betrag'].iloc[-1])
 
@@ -112,7 +114,7 @@ try:
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Wachstumsfaktor (Ø 6M)</div><div class="kachel-wert">{current_trend:.4f}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{(current_trend-1)*100:+.1f} %</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_res[df_res['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_res.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(df_p['Betrag'].sum())}</div></div>
@@ -122,28 +124,27 @@ try:
 
         # CHART
         fig = go.Figure()
-
-        # 1. Prognose-Fläche
+        # Prognose-Fläche
         fig.add_trace(go.Scatter(x=df_p['Monat'], y=df_p['prognose'], fill='tozeroy', mode='none', fillcolor='rgba(169, 169, 169, 0.2)', hoverinfo='skip'))
-
-        # 2. Logarithmische Trendlinie (Dunkler & Markant)
+        
+        # Echte Exponentielle Trendlinie (auf Prognose basierend)
         fig.add_trace(go.Scatter(
-            x=df_p['Monat'], y=df_p['log_trend'], 
-            mode='lines', name='Log. Trend', 
-            line=dict(color='rgba(50, 50, 50, 0.6)', width=2, dash='solid'),
-            hovertemplate="Trend: %{y:,.2f} €<extra></extra>"
+            x=df_p['Monat'], y=df_p['exp_trend'], 
+            mode='lines', 
+            line=dict(color='rgba(40, 40, 40, 0.5)', width=2),
+            hovertemplate="Trend (Exp): %{y:,.2f} €<extra></extra>"
         ))
 
-        # 3. Ist-Verlauf
+        # Ist-Verlauf
         fig.add_trace(go.Scatter(
             x=df_p['Monat'], y=df_p['Betrag'], 
-            mode='lines+markers', name='Ist', 
+            mode='lines+markers', 
             line=dict(color='#424242', width=2), 
             marker=dict(size=10, color=df_p['farbe'], line=dict(width=1, color='white')), 
             hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
         ))
 
-        fig.update_layout(separators=".,", hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), showlegend=False, yaxis=dict(title="€", tickformat=",."), xaxis=dict(tickformat="%b %y"))
+        fig.update_layout(separators=".,", hovermode="x unified", margin=dict(l=5, r=5, t=10, b=10), showlegend=False, yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
