@@ -4,20 +4,19 @@ import plotly.graph_objects as go
 from supabase import create_client, Client
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
-import numpy as np
 
-# --- 1. KONFIGURATION ---
+# --- 1. KONFIGURATION (Das gewohnte Layout) ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
 def format_euro(val):
     if pd.isna(val) or val == 0: return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CSS ---
+# --- CSS (Wieder dein 2x3 Grid) ---
 st.markdown("""
     <style>
-    h1 { font-size: 1.6rem !important; }
-    .kachel-grid { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+    h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
+    .kachel-grid { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; margin-bottom: 20px; }
     .kachel-container {
         background-color: #f0f2f6; border-radius: 10px; padding: 12px 5px;
         text-align: center; border: 1px solid #e6e9ef; flex: 0 0 48%;
@@ -45,33 +44,25 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. DIE "EINE TABELLE FÜR ALLES" LOGIK ---
-def calculate_chart_data(df_db):
+# --- 3. LOGIK (Mathematisch getrennt) ---
+def calculate_all(df_db):
     df_ist = df_db.sort_values('Monat').copy()
     last_dt = df_ist['Monat'].max()
     
-    # Historische Prognose berechnen
     df_ist['prev_yr'] = df_ist['Betrag'].shift(12)
     df_ist['growth'] = (df_ist['Betrag'] / df_ist['prev_yr']) - 1
     trend = df_ist['growth'].dropna().tail(6).mean() if not df_ist['growth'].dropna().empty else 0
     df_ist['prognose_wert'] = df_ist['prev_yr'] * (1 + trend)
     
-    # Zukünftigen Forecast berechnen
-    future_rows = []
+    future = []
     for i in range(1, 13):
         f_dt = last_dt + pd.DateOffset(months=i)
         target = f_dt - pd.DateOffset(years=1)
         prev = df_ist[df_ist['Monat'] == target]['Betrag']
         f_val = prev.values[0] * (1 + trend) if not prev.empty else df_ist['Betrag'].tail(6).mean()
-        future_rows.append({'Monat': f_dt, 'forecast_wert': f_val})
-    df_future = pd.DataFrame(future_rows)
+        future.append({'Monat': f_dt, 'Betrag': f_val})
     
-    # MERGE zu einer Tabelle: Jede Spalte existiert nur für ihren Zeitraum
-    # Wir stellen sicher, dass Forecast keine Werte in Ist-Monaten hat und umgekehrt
-    df_ist = df_ist[['Monat', 'Betrag', 'prognose_wert']].rename(columns={'Betrag': 'ist_wert'})
-    df_final = pd.concat([df_ist, df_future], ignore_index=True).sort_values('Monat')
-    
-    return df_final, trend, (last_dt, df_ist['ist_wert'].iloc[-1])
+    return df_ist, pd.DataFrame(future), trend, (last_dt, df_ist['Betrag'].iloc[-1])
 
 # --- 4. APP ---
 st.title("Provisions-Dashboard")
@@ -87,58 +78,64 @@ with st.expander("➕ Neue Daten erfassen"):
             st.rerun()
 
 try:
-    df_all, trend_val, last_pt = calculate_chart_data(load_data())
+    df_ist, df_future, trend_val, last_pt = calculate_all(load_data())
     
-    if not df_all.empty:
-        # Filter Buttons
+    if not df_ist.empty:
+        # Filter Buttons (Alle wieder da)
+        st.write("Zeitraum filtern:")
         c_f1, c_f2, c_f3 = st.columns(3)
         if 'filter' not in st.session_state: st.session_state.filter = "alles"
-        if c_f1.button("Alles", key="a", use_container_width=True): st.session_state.filter = "alles"
-        if c_f2.button("1 Zeitjahr", key="1", use_container_width=True): st.session_state.filter = "1j"
-        if c_f3.button("3 Zeitjahre", key="3", use_container_width=True): st.session_state.filter = "3j"
+        if c_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
+        if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
+        if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
 
-        # Filterung des Anzeigebereichs
+        # Filter Logik & Vorjahresvergleich
         if st.session_state.filter == "1j":
-            df_display = df_all[df_all['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            df_plot = df_ist[df_ist['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            df_prev = df_ist[(df_ist['Monat'] <= (last_pt[0] - pd.DateOffset(years=1))) & (df_ist['Monat'] > (last_pt[0] - pd.DateOffset(years=2)))]
         elif st.session_state.filter == "3j":
-            df_display = df_all[df_all['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            df_plot = df_ist[df_ist['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            df_prev = df_ist[(df_ist['Monat'] <= (last_pt[0] - pd.DateOffset(years=3))) & (df_ist['Monat'] > (last_pt[0] - pd.DateOffset(years=6)))]
         else:
-            df_display = df_all
+            df_plot = df_ist
+            df_prev = pd.DataFrame()
 
-        # Kacheln
+        sum_period = df_plot['Betrag'].sum()
+        diff_val = f"{((sum_period / df_prev['Betrag'].sum()) - 1) * 100:+.1f} %" if not df_prev.empty else "--"
+
+        # --- 6 KACHELN (Wie ursprünglich gefordert) ---
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend_val*100:+.1f} %</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_all['forecast_wert'].dropna().iloc[0])}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_all['ist_wert'].dropna().tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(df_display['ist_wert'].sum())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Optimiert</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_future['Betrag'].iloc[0])}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_ist['Betrag'].tail(12).mean())}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
             </div>
         """, unsafe_allow_html=True)
 
         # --- CHART ---
         fig = go.Figure()
-
-        # 1. Prognose-Fläche (Nur Ist-Monate haben hier Werte)
+        
+        # 1. Fläche
         fig.add_trace(go.Scatter(
-            x=df_display['Monat'], y=df_display['prognose_wert'],
+            x=df_plot['Monat'], y=df_plot['prognose_wert'],
             fill='tozeroy', mode='none', name='Prognose',
-            fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
+            fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
         ))
 
-        # 2. Ist-Linie (Grün)
+        # 2. Ist-Linie
         fig.add_trace(go.Scatter(
-            x=df_display['Monat'], y=df_display['ist_wert'],
+            x=df_plot['Monat'], y=df_plot['Betrag'],
             mode='lines+markers', name='Ist',
             line=dict(color='#2e7d32', width=3), marker=dict(size=8),
             hovertemplate="Ist: %{y:,.2f} €<extra></extra>"
         ))
 
-        # 3. Forecast-Linie (Grau) - Startet erst im Monat NACH Ist
+        # 3. Forecast (Hier wird 'hoverinfo' so gesetzt, dass er NUR an seinen eigenen Punkten erscheint)
         fig.add_trace(go.Scatter(
-            x=df_display['Monat'], y=df_display['forecast_wert'],
+            x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
             line=dict(color='#A9A9A9', width=3), marker=dict(size=8),
             hovertemplate="Forecast: %{y:,.2f} €<extra></extra>"
