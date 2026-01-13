@@ -7,25 +7,39 @@ from datetime import datetime
 # --- 1. SEITEN-KONFIGURATION ---
 st.set_page_config(page_title="Provisions-Tracker", layout="centered")
 
-# --- HILFSFUNKTION FÜR EURO-FORMATIERUNG (Kacheln) ---
+# --- HILFSFUNKTION FÜR EURO-FORMATIERUNG ---
 def format_euro(val):
     if pd.isna(val): return "0,00 €"
     return "{:,.2f} €".format(val).replace(",", "X").replace(".", ",").replace("X", ".")
 
-# --- CUSTOM CSS ---
+# --- CUSTOM CSS FÜR MOBILE KACHELN (Gitter-Layout) ---
 st.markdown("""
     <style>
     h1 { font-size: 1.6rem !important; margin-bottom: 0.5rem; }
+    
+    /* Container für das 2x2 Gitter */
+    .kachel-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: space-between;
+        margin-bottom: 20px;
+    }
+    
+    /* Einzelne Kachel: Immer ca. 48% Breite für 2er-Reihe */
     .kachel-container {
         background-color: #f0f2f6;
         border-radius: 10px;
-        padding: 15px;
+        padding: 12px 5px;
         text-align: center;
-        margin-bottom: 10px;
         border: 1px solid #e6e9ef;
+        flex: 0 0 48%; /* Erzwingt zwei Kacheln nebeneinander */
+        box-sizing: border-box;
     }
-    .kachel-titel { font-size: 0.85rem; color: #5f6368; margin-bottom: 5px; }
-    .kachel-wert { font-size: 1.3rem; font-weight: bold; color: #2e7d32; }
+    
+    .kachel-titel { font-size: 0.75rem; color: #5f6368; margin-bottom: 3px; }
+    .kachel-wert { font-size: 1.1rem; font-weight: bold; color: #2e7d32; }
+    
     .stButton>button { 
         width: 100%; border-radius: 5px; height: 3em; 
         background-color: #2e7d32; color: white; font-weight: bold; border: none;
@@ -94,28 +108,38 @@ with st.expander("➕ Neue Daten erfassen"):
 try:
     df_raw, df_future, trend = calculate_all_forecasts(load_data())
     if not df_raw.empty:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(df_raw["Betrag"].iloc[-1])}</div></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend*100:+.1f} %</div></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Forecast (Nächster M)</div><div class="kachel-wert">{format_euro(df_future["Betrag"].iloc[1])}</div></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kachel-container"><div class="kachel-titel">Ø Letzte 12 Monate</div><div class="kachel-wert">{format_euro(df_raw["Betrag"].tail(12).mean())}</div></div>', unsafe_allow_html=True)
+        # --- KACHELN IM 2x2 GRID (HTML/CSS statt st.columns) ---
+        st.markdown(f"""
+            <div class="kachel-grid">
+                <div class="kachel-container">
+                    <div class="kachel-titel">Letzter Monat</div>
+                    <div class="kachel-wert">{format_euro(df_raw['Betrag'].iloc[-1])}</div>
+                </div>
+                <div class="kachel-container">
+                    <div class="kachel-titel">Trend (Ø 6M YoY)</div>
+                    <div class="kachel-wert">{trend*100:+.1f} %</div>
+                </div>
+                <div class="kachel-container">
+                    <div class="kachel-titel">Forecast (Nächster M)</div>
+                    <div class="kachel-wert">{format_euro(df_future['Betrag'].iloc[1])}</div>
+                </div>
+                <div class="kachel-container">
+                    <div class="kachel-titel">Ø Letzte 12 Monate</div>
+                    <div class="kachel-wert">{format_euro(df_raw['Betrag'].tail(12).mean())}</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
 
         # --- CHART ---
         fig = go.Figure()
-
-        # Hover-Vorlage für deutsches Format
-        # %{y:,.2f} nutzt Punkt für Tausender und Komma für Dezimal dank 'separators' unten
-        hover_template = '%{x|%b %Y}<br>Betrag: %{y:,.2f} €<extra></extra>'
+        hover_template = '%{{x|%b %Y}}<br>Betrag: %{{y:,.2f}} €<extra></extra>'
 
         # 1. Historische Prognose (Fläche)
         df_plot_hist = df_raw.dropna(subset=['hist_forecast'])
         fig.add_trace(go.Scatter(
             x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'],
             fill='tozeroy', mode='none', name='Prognose-Basis',
-            fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate=hover_template
+            fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate=hover_template
         ))
 
         # 2. Ist-Daten (Grün)
@@ -126,7 +150,7 @@ try:
             hovertemplate=hover_template
         ))
 
-        # 3. Zukünftiger Forecast (Graue Linie)
+        # 3. Zukünftiger Forecast (Grau)
         fig.add_trace(go.Scatter(
             x=df_future['Monat'], y=df_future['Betrag'],
             mode='lines+markers', name='Forecast',
@@ -135,8 +159,8 @@ try:
         ))
 
         fig.update_layout(
-            separators=".,", # Punkt als Tausender, Komma als Dezimal (Global für dieses Chart)
-            margin=dict(l=10, r=10, t=10, b=10),
+            separators=".,",
+            margin=dict(l=5, r=5, t=10, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
             hovermode="x unified",
             yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
