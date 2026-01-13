@@ -44,40 +44,43 @@ def load_data():
     df['Betrag'] = pd.to_numeric(df['Betrag'])
     return df
 
-# --- 3. LOGIK (DEIN ANSATZ) ---
-def calculate_combined_logic(df_db):
+# --- 3. LOGIK (DEINE ORIGINAL-PROGNOSE) ---
+def calculate_logic(df_db):
     df = df_db.sort_values('Monat').copy()
     last_dt = df['Monat'].max()
     
-    # Trend berechnen
+    # 1. Trend berechnen (Steigerung der letzten 6 Monate zum Vorjahr)
     df['prev_yr'] = df['Betrag'].shift(12)
-    df['growth'] = (df['Betrag'] / df['prev_yr']) - 1
-    trend = df['growth'].dropna().tail(6).mean() if not df['growth'].dropna().empty else 0
+    df['yoy_growth'] = (df['Betrag'] / df['prev_yr']) - 1
     
-    # Durchgehende Zeitachse erstellen
+    # Mittelwert der letzten 6 verfügbaren YoY-Wachstumsraten
+    growth_rates = df['yoy_growth'].dropna()
+    trend = growth_rates.tail(6).mean() if not growth_rates.empty else 0
+    
+    # 2. Durchgehende Zeitachse (Feld-Ansatz)
     all_dates = pd.date_range(start=df['Monat'].min(), end=last_dt + pd.DateOffset(months=12), freq='MS')
-    df_combined = pd.DataFrame({'Monat': all_dates})
-    df_combined = df_combined.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
+    df_total = pd.DataFrame({'Monat': all_dates})
+    df_total = df_total.merge(df[['Monat', 'Betrag']], on='Monat', how='left')
     
-    # Prognose berechnen
-    def get_prognose(row):
+    # 3. Prognose für alle Monate berechnen (Vorjahr * (1 + Trend))
+    def get_prog(row):
         target_prev = row['Monat'] - pd.DateOffset(years=1)
-        prev_val = df[df['Monat'] == target_prev]['Betrag']
-        if not prev_val.empty:
-            return prev_val.values[0] * (1 + trend)
+        # Wir suchen den Wert in den Originaldaten
+        prev_row = df[df['Monat'] == target_prev]
+        if not prev_row.empty:
+            return prev_row['Betrag'].values[0] * (1 + trend)
         return None
 
-    df_combined['prognose'] = df_combined.apply(get_prognose, axis=1)
+    df_total['prognose'] = df_total.apply(get_prog, axis=1)
     
-    # Ampel-Farben bestimmen
+    # 4. Ampel-Logik
     def get_color(row):
-        if pd.isna(row['Betrag']) or pd.isna(row['prognose']):
-            return '#2e7d32' # Default Grün
-        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800' # Grün oder Orange
+        if pd.isna(row['Betrag']) or pd.isna(row['prognose']): return '#424242' 
+        return '#2e7d32' if row['Betrag'] >= row['prognose'] else '#ff9800'
 
-    df_combined['punkt_farbe'] = df_combined.apply(get_color, axis=1)
+    df_total['farbe'] = df_total.apply(get_color, axis=1)
     
-    return df_combined, trend, (last_dt, df['Betrag'].iloc[-1])
+    return df_total, trend, (last_dt, df['Betrag'].iloc[-1])
 
 # --- 4. APP ---
 st.title("Provisions-Dashboard")
@@ -93,68 +96,56 @@ with st.expander("➕ Neue Daten erfassen"):
             st.rerun()
 
 try:
-    df_total, trend_val, last_pt = calculate_combined_logic(load_data())
+    df_total, trend_val, last_pt = calculate_logic(load_data())
     
     if not df_total.empty:
-        # Filter Buttons
-        st.write("Zeitraum filtern:")
+        # Filter
         c_f1, c_f2, c_f3 = st.columns(3)
         if 'filter' not in st.session_state: st.session_state.filter = "alles"
         if c_f1.button("Alles", use_container_width=True): st.session_state.filter = "alles"
         if c_f2.button("1 Zeitjahr", use_container_width=True): st.session_state.filter = "1j"
         if c_f3.button("3 Zeitjahre", use_container_width=True): st.session_state.filter = "3j"
 
+        # Zeiträume für Berechnungen festlegen
         if st.session_state.filter == "1j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=1))]
+            # Vorperiode = 1 Jahr vor dem aktuellen Jahr
+            start_prev = last_pt[0] - pd.DateOffset(years=2)
+            end_prev = last_pt[0] - pd.DateOffset(years=1)
         elif st.session_state.filter == "3j":
             df_plot = df_total[df_total['Monat'] > (last_pt[0] - pd.DateOffset(years=3))]
+            start_prev = last_pt[0] - pd.DateOffset(years=6)
+            end_prev = last_pt[0] - pd.DateOffset(years=3)
         else:
             df_plot = df_total
+            start_prev, end_prev = None, None
 
-        # Kacheln
+        # Summe und Vergleichsberechnung
+        sum_period = df_plot['Betrag'].sum()
+        diff_val = "--"
+        if start_prev:
+            sum_prev = df_total[(df_total['Monat'] > start_prev) & (df_total['Monat'] <= end_prev)]['Betrag'].sum()
+            if sum_prev > 0:
+                diff_val = f"{((sum_period / sum_prev) - 1) * 100:+.1f} %"
+
+        # Kacheln (Original-Set)
         st.markdown(f"""
             <div class="kachel-grid">
                 <div class="kachel-container"><div class="kachel-titel">Letzter Monat</div><div class="kachel-wert">{format_euro(last_pt[1])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Trend (Ø 6M YoY)</div><div class="kachel-wert">{trend_val*100:+.1f} %</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Forecast (Folgem.)</div><div class="kachel-wert">{format_euro(df_total[df_total['Monat'] > last_pt[0]]['prognose'].iloc[0])}</div></div>
                 <div class="kachel-container"><div class="kachel-titel">Ø 12 Monate</div><div class="kachel-wert">{format_euro(df_total.dropna(subset=['Betrag'])['Betrag'].tail(12).mean())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Summe (Zeitraum)</div><div class="kachel-wert">{format_euro(df_plot['Betrag'].sum())}</div></div>
-                <div class="kachel-container"><div class="kachel-titel">Status</div><div class="kachel-wert">Korrekt</div></div>
+                <div class="kachel-container"><div class="kachel-titel">Summe Zeitraum</div><div class="kachel-wert">{format_euro(sum_period)}</div></div>
+                <div class="kachel-container"><div class="kachel-titel">vs. Vor-Zeitraum</div><div class="kachel-wert">{diff_val}</div></div>
             </div>
         """, unsafe_allow_html=True)
 
-        # --- CHART ---
+        # CHART
         fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['prognose'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"))
+        fig.add_trace(go.Scatter(x=df_plot['Monat'], y=df_plot['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#424242', width=2), marker=dict(size=10, color=df_plot['farbe'], line=dict(width=1, color='white')), hovertemplate="Ist: %{y:,.2f} €<extra></extra>", connectgaps=False))
 
-        # 1. Durchgehende Fläche (Prognose)
-        fig.add_trace(go.Scatter(
-            x=df_plot['Monat'], y=df_plot['prognose'],
-            fill='tozeroy', mode='none', name='Prognose',
-            fillcolor='rgba(169, 169, 169, 0.2)',
-            hovertemplate="Prognose: %{y:,.2f} €<extra></extra>"
-        ))
-
-        # 2. Ist-Linie (Dunkelgrau mit farbigen Punkten)
-        fig.add_trace(go.Scatter(
-            x=df_plot['Monat'], y=df_plot['Betrag'],
-            mode='lines+markers', name='Ist',
-            line=dict(color='#424242', width=2), # Dunkelgraue Linie
-            marker=dict(
-                size=10, 
-                color=df_plot['punkt_farbe'], # Dynamische Farbe
-                line=dict(width=1, color='white')
-            ),
-            hovertemplate="Ist: %{y:,.2f} €<extra></extra>",
-            connectgaps=False
-        ))
-
-        fig.update_layout(
-            separators=".,", margin=dict(l=5, r=5, t=10, b=10),
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
-            hovermode="x unified",
-            yaxis=dict(title="€", tickformat=",.", exponentformat="none"),
-            xaxis=dict(tickformat="%b %y")
-        )
+        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€"), xaxis=dict(tickformat="%b %y"))
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
