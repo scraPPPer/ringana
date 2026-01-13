@@ -168,15 +168,33 @@ try:
         # --- CHART ---
         fig = go.Figure()
         
-        # Korrigiertes Hover-Template (einfache geschweifte Klammern)
-        h_temp = "%{x|%b %Y}<br>Betrag: %{y:,.2f} €<extra></extra>"
+        # Hover-Template: Zeigt nur den Namen der Spur und den y-Wert an
+        h_temp = "%{fullData.name}: %{y:,.2f} €<extra></extra>"
 
         df_plot_hist = df_filtered.dropna(subset=['hist_forecast'])
         fig.add_trace(go.Scatter(x=df_plot_hist['Monat'], y=df_plot_hist['hist_forecast'], fill='tozeroy', mode='none', name='Prognose', fillcolor='rgba(169, 169, 169, 0.2)', hovertemplate=h_temp))
         fig.add_trace(go.Scatter(x=df_filtered['Monat'], y=df_filtered['Betrag'], mode='lines+markers', name='Ist', line=dict(color='#2e7d32', width=3), marker=dict(size=8), hovertemplate=h_temp))
-        fig.add_trace(go.Scatter(x=df_future['Monat'], y=df_future['Betrag'], mode='lines+markers', name='Forecast', line=dict(color='#A9A9A9', width=3), marker=dict(size=8), hovertemplate=h_temp))
         
-        fig.update_layout(separators=".,", margin=dict(l=5, r=5, t=10, b=10), legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), hovermode="x unified", yaxis=dict(title="€", tickformat=",.", exponentformat="none"), xaxis=dict(tickformat="%b %Y"))
+        # Für den Forecast blenden wir den ersten Punkt (der die Verbindung ist) im Hover aus,
+        # damit er im Nov 2025 nicht doppelt erscheint.
+        fig.add_trace(go.Scatter(
+            x=df_future['Monat'], 
+            y=df_future['Betrag'], 
+            mode='lines+markers', 
+            name='Forecast', 
+            line=dict(color='#A9A9A9', width=3), 
+            marker=dict(size=8),
+            hovertemplate=h_temp
+        ))
+        
+        fig.update_layout(
+            separators=".,", 
+            margin=dict(l=5, r=5, t=10, b=10), 
+            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), 
+            hovermode="x unified", 
+            yaxis=dict(title="€", tickformat=",.", exponentformat="none"), 
+            xaxis=dict(tickformat="%b %Y")
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
